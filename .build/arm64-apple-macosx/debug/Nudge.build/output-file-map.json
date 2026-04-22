@@ -1,0 +1,68 @@
+{
+  "": {
+    "swift-dependencies": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/master.swiftdeps"
+  },
+  "/Users/gordonhuang/Desktop/organizo/Sources/Nudge/App.swift": {
+    "dependencies": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/App.d",
+    "object": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/App.swift.o",
+    "swiftmodule": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/App~partial.swiftmodule",
+    "swift-dependencies": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/App.swiftdeps",
+    "diagnostics": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/App.dia"
+  },
+  "/Users/gordonhuang/Desktop/organizo/Sources/Nudge/ContentView.swift": {
+    "dependencies": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/ContentView.d",
+    "object": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/ContentView.swift.o",
+    "swiftmodule": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/ContentView~partial.swiftmodule",
+    "swift-dependencies": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/ContentView.swiftdeps",
+    "diagnostics": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/ContentView.dia"
+  },
+  "/Users/gordonhuang/Desktop/organizo/Sources/Nudge/ViewModels/ScheduleViewModel.swift": {
+    "dependencies": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/ScheduleViewModel.d",
+    "object": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/ScheduleViewModel.swift.o",
+    "swiftmodule": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/ScheduleViewModel~partial.swiftmodule",
+    "swift-dependencies": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/ScheduleViewModel.swiftdeps",
+    "diagnostics": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/ScheduleViewModel.dia"
+  },
+  "/Users/gordonhuang/Desktop/organizo/Sources/Nudge/models/NudgeTask.swift": {
+    "dependencies": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/NudgeTask.d",
+    "object": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/NudgeTask.swift.o",
+    "swiftmodule": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/NudgeTask~partial.swiftmodule",
+    "swift-dependencies": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/NudgeTask.swiftdeps",
+    "diagnostics": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/NudgeTask.dia"
+  },
+  "/Users/gordonhuang/Desktop/organizo/Sources/Nudge/models/Schedule.swift": {
+    "dependencies": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/Schedule.d",
+    "object": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/Schedule.swift.o",
+    "swiftmodule": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/Schedule~partial.swiftmodule",
+    "swift-dependencies": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/Schedule.swiftdeps",
+    "diagnostics": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/Schedule.dia"
+  },
+  "/Users/gordonhuang/Desktop/organizo/Sources/Nudge/services/CalendarService.swift": {
+    "dependencies": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/CalendarService.d",
+    "object": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/CalendarService.swift.o",
+    "swiftmodule": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/CalendarService~partial.swiftmodule",
+    "swift-dependencies": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/CalendarService.swiftdeps",
+    "diagnostics": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/CalendarService.dia"
+  },
+  "/Users/gordonhuang/Desktop/organizo/Sources/Nudge/services/NotificationService.swift": {
+    "dependencies": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/NotificationService.d",
+    "object": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/NotificationService.swift.o",
+    "swiftmodule": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/NotificationService~partial.swiftmodule",
+    "swift-dependencies": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/NotificationService.swiftdeps",
+    "diagnostics": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/NotificationService.dia"
+  },
+  "/Users/gordonhuang/Desktop/organizo/Sources/Nudge/services/SupabaseService.swift": {
+    "dependencies": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/SupabaseService.d",
+    "object": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/SupabaseService.swift.o",
+    "swiftmodule": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/SupabaseService~partial.swiftmodule",
+    "swift-dependencies": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/SupabaseService.swiftdeps",
+    "diagnostics": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/SupabaseService.dia"
+  },
+  "/Users/gordonhuang/Desktop/organizo/Sources/Nudge/services/WisprService.swift": {
+    "dependencies": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/WisprService.d",
+    "object": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/WisprService.swift.o",
+    "swiftmodule": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/WisprService~partial.swiftmodule",
+    "swift-dependencies": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/WisprService.swiftdeps",
+    "diagnostics": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/Nudge.build/WisprService.dia"
+  }
+}

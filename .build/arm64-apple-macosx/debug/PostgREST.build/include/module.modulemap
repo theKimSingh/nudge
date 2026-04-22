@@ -1,0 +1,3 @@
+module PostgREST {
+    header "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/include/PostgREST-Swift.h"
+}

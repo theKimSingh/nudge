@@ -1,0 +1,75 @@
+{
+  "": {
+    "swift-dependencies": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/master.swiftdeps"
+  },
+  "/Users/gordonhuang/Desktop/organizo/.build/checkouts/supabase-swift/Sources/PostgREST/Defaults.swift": {
+    "dependencies": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/Defaults.d",
+    "object": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/Defaults.swift.o",
+    "swiftmodule": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/Defaults~partial.swiftmodule",
+    "swift-dependencies": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/Defaults.swiftdeps",
+    "diagnostics": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/Defaults.dia"
+  },
+  "/Users/gordonhuang/Desktop/organizo/.build/checkouts/supabase-swift/Sources/PostgREST/Deprecated.swift": {
+    "dependencies": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/Deprecated.d",
+    "object": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/Deprecated.swift.o",
+    "swiftmodule": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/Deprecated~partial.swiftmodule",
+    "swift-dependencies": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/Deprecated.swiftdeps",
+    "diagnostics": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/Deprecated.dia"
+  },
+  "/Users/gordonhuang/Desktop/organizo/.build/checkouts/supabase-swift/Sources/PostgREST/Exports.swift": {
+    "dependencies": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/Exports.d",
+    "object": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/Exports.swift.o",
+    "swiftmodule": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/Exports~partial.swiftmodule",
+    "swift-dependencies": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/Exports.swiftdeps",
+    "diagnostics": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/Exports.dia"
+  },
+  "/Users/gordonhuang/Desktop/organizo/.build/checkouts/supabase-swift/Sources/PostgREST/PostgrestBuilder.swift": {
+    "dependencies": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/PostgrestBuilder.d",
+    "object": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/PostgrestBuilder.swift.o",
+    "swiftmodule": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/PostgrestBuilder~partial.swiftmodule",
+    "swift-dependencies": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/PostgrestBuilder.swiftdeps",
+    "diagnostics": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/PostgrestBuilder.dia"
+  },
+  "/Users/gordonhuang/Desktop/organizo/.build/checkouts/supabase-swift/Sources/PostgREST/PostgrestClient.swift": {
+    "dependencies": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/PostgrestClient.d",
+    "object": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/PostgrestClient.swift.o",
+    "swiftmodule": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/PostgrestClient~partial.swiftmodule",
+    "swift-dependencies": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/PostgrestClient.swiftdeps",
+    "diagnostics": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/PostgrestClient.dia"
+  },
+  "/Users/gordonhuang/Desktop/organizo/.build/checkouts/supabase-swift/Sources/PostgREST/PostgrestFilterBuilder.swift": {
+    "dependencies": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/PostgrestFilterBuilder.d",
+    "object": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/PostgrestFilterBuilder.swift.o",
+    "swiftmodule": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/PostgrestFilterBuilder~partial.swiftmodule",
+    "swift-dependencies": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/PostgrestFilterBuilder.swiftdeps",
+    "diagnostics": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/PostgrestFilterBuilder.dia"
+  },
+  "/Users/gordonhuang/Desktop/organizo/.build/checkouts/supabase-swift/Sources/PostgREST/PostgrestFilterValue.swift": {
+    "dependencies": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/PostgrestFilterValue.d",
+    "object": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/PostgrestFilterValue.swift.o",
+    "swiftmodule": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/PostgrestFilterValue~partial.swiftmodule",
+    "swift-dependencies": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/PostgrestFilterValue.swiftdeps",
+    "diagnostics": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/PostgrestFilterValue.dia"
+  },
+  "/Users/gordonhuang/Desktop/organizo/.build/checkouts/supabase-swift/Sources/PostgREST/PostgrestQueryBuilder.swift": {
+    "dependencies": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/PostgrestQueryBuilder.d",
+    "object": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/PostgrestQueryBuilder.swift.o",
+    "swiftmodule": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/PostgrestQueryBuilder~partial.swiftmodule",
+    "swift-dependencies": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/PostgrestQueryBuilder.swiftdeps",
+    "diagnostics": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/PostgrestQueryBuilder.dia"
+  },
+  "/Users/gordonhuang/Desktop/organizo/.build/checkouts/supabase-swift/Sources/PostgREST/PostgrestTransformBuilder.swift": {
+    "dependencies": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/PostgrestTransformBuilder.d",
+    "object": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/PostgrestTransformBuilder.swift.o",
+    "swiftmodule": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/PostgrestTransformBuilder~partial.swiftmodule",
+    "swift-dependencies": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/PostgrestTransformBuilder.swiftdeps",
+    "diagnostics": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/PostgrestTransformBuilder.dia"
+  },
+  "/Users/gordonhuang/Desktop/organizo/.build/checkouts/supabase-swift/Sources/PostgREST/Types.swift": {
+    "dependencies": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/Types.d",
+    "object": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/Types.swift.o",
+    "swiftmodule": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/Types~partial.swiftmodule",
+    "swift-dependencies": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/Types.swiftdeps",
+    "diagnostics": "/Users/gordonhuang/Desktop/organizo/.build/arm64-apple-macosx/debug/PostgREST.build/Types.dia"
+  }
+}

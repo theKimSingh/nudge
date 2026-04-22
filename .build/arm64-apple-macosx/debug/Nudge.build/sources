@@ -1,0 +1,9 @@
+/Users/gordonhuang/Desktop/organizo/Sources/Nudge/App.swift
+/Users/gordonhuang/Desktop/organizo/Sources/Nudge/ContentView.swift
+/Users/gordonhuang/Desktop/organizo/Sources/Nudge/ViewModels/ScheduleViewModel.swift
+/Users/gordonhuang/Desktop/organizo/Sources/Nudge/models/NudgeTask.swift
+/Users/gordonhuang/Desktop/organizo/Sources/Nudge/models/Schedule.swift
+/Users/gordonhuang/Desktop/organizo/Sources/Nudge/services/CalendarService.swift
+/Users/gordonhuang/Desktop/organizo/Sources/Nudge/services/NotificationService.swift
+/Users/gordonhuang/Desktop/organizo/Sources/Nudge/services/SupabaseService.swift
+/Users/gordonhuang/Desktop/organizo/Sources/Nudge/services/WisprService.swift
