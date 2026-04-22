@@ -16,10 +16,20 @@ We want to be able to create a personalized voice assistant that essentially kee
 
 ## Setup
 
-1. Clone the repository
-2. Open in Xcode or VS Code with Swift support
-3. Run `swift build` to build the package
-4. For iOS app, create an Xcode project or use Swift Playgrounds
+1. Clone the repository: `git clone git@github.com:theKimSingh/organizo.git`
+2. Open `Nudge.xcodeproj` in Xcode 26+ (Xcode will auto-resolve the Supabase SPM package on first open — takes ~1 min)
+3. Select an iOS 16+ Simulator and press ⌘R to build and run
+
+### Regenerating the Xcode project
+
+`Nudge.xcodeproj` is generated from `project.yml` via [XcodeGen](https://github.com/yonaskolb/XcodeGen). If you add new Swift files under `sources/Nudge/` or change build settings, regenerate:
+
+```
+brew install xcodegen   # first time only
+xcodegen generate
+```
+
+Files dropped into `sources/Nudge/` are picked up automatically on regenerate — don't add them via Xcode's UI or they'll be overwritten.
 
 ## Technologies
 

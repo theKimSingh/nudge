@@ -1,0 +1,52 @@
+name: Nudge
+options:
+  bundleIdPrefix: com.nudge
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+    TARGETED_DEVICE_FAMILY: "1,2"
+packages:
+  Supabase:
+    url: https://github.com/supabase/supabase-swift.git
+    from: 2.0.0
+targets:
+  Nudge:
+    type: application
+    platform: iOS
+    sources:
+      - path: sources/Nudge
+    dependencies:
+      - package: Supabase
+        product: Supabase
+    info:
+      path: Nudge/Info.plist
+      properties:
+        CFBundleDisplayName: Nudge
+        UILaunchScreen:
+          UIColorName: ""
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        NSMicrophoneUsageDescription: Nudge uses the microphone to capture your spoken plan each morning.
+        NSSpeechRecognitionUsageDescription: Nudge uses speech recognition to turn your spoken plan into a schedule.
+        NSCalendarsUsageDescription: Nudge adds your generated schedule to your calendar.
+        NSCalendarsFullAccessUsageDescription: Nudge adds your generated schedule to your calendar.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.nudge.Nudge
+        GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGNING_ALLOWED: NO
