@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx expo *)",
+      "Bash(pod install *)",
+      "Bash(cp -R /tmp/nudge-scaffold/app /tmp/nudge-scaffold/components /tmp/nudge-scaffold/constants /tmp/nudge-scaffold/hooks /tmp/nudge-scaffold/scripts /tmp/nudge-scaffold/assets /Users/nam/Documents/Projects/Nudge/)",
+      "Bash(cp /tmp/nudge-scaffold/app.json /tmp/nudge-scaffold/package.json /tmp/nudge-scaffold/tsconfig.json /tmp/nudge-scaffold/eslint.config.js /Users/nam/Documents/Projects/Nudge/)",
+      "Bash(npx tsc *)",
+      "Bash(npx expo-doctor *)",
+      "Bash(curl -fsS -o /dev/null \"http://localhost:8087/status\")",
+      "Bash(curl -sS -o /tmp/bundle.js -w \"HTTP %{http_code}  size=%{size_download}\\\\n\" \"http://localhost:8087/index.bundle?platform=ios&dev=true&minify=false\")"
+    ],
+    "additionalDirectories": [
+      "/tmp"
+    ]
+  }
+}
