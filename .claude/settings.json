@@ -8,10 +8,29 @@
       "Bash(npx tsc *)",
       "Bash(npx expo-doctor *)",
       "Bash(curl -fsS -o /dev/null \"http://localhost:8087/status\")",
-      "Bash(curl -sS -o /tmp/bundle.js -w \"HTTP %{http_code}  size=%{size_download}\\\\n\" \"http://localhost:8087/index.bundle?platform=ios&dev=true&minify=false\")"
+      "Bash(curl -sS -o /tmp/bundle.js -w \"HTTP %{http_code}  size=%{size_download}\\\\n\" \"http://localhost:8087/index.bundle?platform=ios&dev=true&minify=false\")",
+      "Bash(grep -E \"\\\\.\\(tsx|ts|json|js|md\\)$\")",
+      "Bash(git -C /Users/nam/Documents/Projects/Nudge check-ignore -v organizo/.build/)",
+      "Bash(git -C /Users/nam/Documents/Projects/Nudge status --short)",
+      "Bash(git -C /Users/nam/Documents/Projects/Nudge log --oneline -5)",
+      "Bash(git -C /Users/nam/Documents/Projects/Nudge status)",
+      "Edit(/.claude/skills/nudge-backend/**)",
+      "Bash(cp /Users/nam/Documents/Projects/Sen/Sen/Assets.xcassets/tasks_complete.imageset/tasks_complete.svg /Users/nam/Documents/Projects/Nudge/assets/illustrations/tasks_complete.svg)",
+      "Bash(cp /Users/nam/Documents/Projects/Sen/Sen/Assets.xcassets/hotair_balloon.imageset/hotair_balloon.svg /Users/nam/Documents/Projects/Nudge/assets/illustrations/hotair_balloon.svg)",
+      "Bash(cp /Users/nam/Documents/Projects/Sen/Sen/Assets.xcassets/clouds.imageset/clouds.svg /Users/nam/Documents/Projects/Nudge/assets/illustrations/clouds.svg)",
+      "Bash(node -e \"const fs=require\\('fs'\\); ['tasks_complete','hotair_balloon','clouds'].forEach\\(name=>{const xml=fs.readFileSync\\('assets/illustrations/'+name+'.svg','utf8'\\).replace\\(/\\\\n/g,' '\\).replace\\(/\\\\s+/g,' '\\).trim\\(\\); const camel=name.replace\\(/_\\(.\\)/g,\\(_,c\\)=>c.toUpperCase\\(\\)\\)+'Svg'; const content='export const '+camel+' = ' + JSON.stringify\\(xml\\) + ';\\\\n'; fs.writeFileSync\\('assets/illustrations/'+name+'.ts', content\\); console.log\\('Wrote', name+'.ts', xml.length+'bytes'\\);}\\)\")",
+      "Bash(npm run *)",
+      "Bash(git mv *)",
+      "Bash(xargs -0 sed -i '' -E \"s#from \\(['\\\\\"]\\)@/\\(components|constants|hooks|lib\\)/#from \\\\1@/src/\\\\2/#g\")",
+      "Bash(xargs -0 sed -i '' -e 's#@/src/lib/supabase#@/src/backend/supabase#g' -e 's#@/src/lib/auth#@/src/backend/session#g' -e 's#@/src/features/auth/api/auth#@/src/backend/onboarding-auth#g')",
+      "Bash(kill 80818)",
+      "Bash(lsof -ti:8081)",
+      "Bash(xargs -r kill)",
+      "Bash(grep -vE '^\\(node_modules|\\\\.expo|\\\\.git|package-lock\\\\.json\\)$')"
     ],
     "additionalDirectories": [
-      "/tmp"
+      "/tmp",
+      "/Users/nam/Documents/Projects/Nudge/.claude/skills"
     ]
   }
 }

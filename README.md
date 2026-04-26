@@ -17,6 +17,16 @@ npm run dev
 - `w` → Web
 - Or scan the QR code with the [Expo Go](https://expo.dev/go) app on your phone (fastest path — works on mac or thinkpad, no native build needed)
 
+## Backend (Supabase)
+
+```bash
+cp .env.example .env
+# then fill in EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY
+npm run dev
+```
+
+Open the **Supabase** tab in the app to verify the connection. The client lives at [lib/supabase.ts](lib/supabase.ts); auth helpers + `useSession()` hook at [lib/auth.ts](lib/auth.ts).
+
 ## Scripts
 
 | Script | What it does |

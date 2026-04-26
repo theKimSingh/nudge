@@ -10,10 +10,10 @@ web-build/
 ios/
 android/
 
-# Env
+# Env (commit only .env.example)
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
 
 # Logs
 npm-debug.*
