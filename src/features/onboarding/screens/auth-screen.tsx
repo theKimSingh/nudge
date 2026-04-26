@@ -25,6 +25,7 @@ import {
   signUpWithEmail,
   verifyEmailOtp,
 } from '@/src/backend/onboarding-auth';
+import { getProfile } from '@/src/backend/profiles';
 
 import { BackButton } from '../components/back-button';
 import { FadeSlideIn } from '../components/fade-slide-in';
@@ -35,6 +36,8 @@ import { useOnboarding } from '../context/onboarding-context';
 type Mode = 'signup' | 'signin';
 type Stage = 'form' | 'verify';
 type LoadingProvider = null | 'apple' | 'google' | 'email';
+
+const OTP_LENGTH = 6;
 
 const isEmailValid = (email: string) => /@.+\./.test(email);
 const isPasswordValid = (password: string) => password.length >= 8;
@@ -71,7 +74,7 @@ export function AuthScreen() {
 
   const canSubmitForm =
     isEmailValid(email) && (mode === 'signin' || isPasswordValid(password)) && !loading;
-  const canSubmitVerify = code.length === 6 && !loading;
+  const canSubmitVerify = code.length === OTP_LENGTH && !loading;
 
   async function handleEmailSubmit() {
     setError(null);
@@ -83,7 +86,12 @@ export function AuthScreen() {
       } else {
         const session = await signInWithPassword(email, password);
         setPendingSession(session);
-        router.push('/(onboarding)/profile-setup');
+        const profile = await getProfile(session.userId);
+        if (profile?.onboarded) {
+          router.replace('/(tabs)/home');
+        } else {
+          router.push('/(onboarding)/profile-setup');
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong.');
@@ -202,7 +210,7 @@ export function AuthScreen() {
                 resendOk={resendOk}
                 canSubmit={canSubmitVerify}
                 otpInputRef={otpInputRef}
-                onCodeChange={(text) => setCode(text.replace(/\D/g, '').slice(0, 6))}
+                onCodeChange={(text) => setCode(text.replace(/\D/g, '').slice(0, OTP_LENGTH))}
                 onSubmit={handleVerifySubmit}
                 onResend={handleResend}
                 palette={palette}
@@ -518,7 +526,7 @@ function VerifyStage(props: VerifyStageProps) {
           darkColor={Colors.dark.textSecondary}
           style={styles.verifySubhead}
         >
-          We sent a 6-digit code to {email}.
+          We sent an {OTP_LENGTH}-digit code to {email}.
         </ThemedText>
       </FadeSlideIn>
 
@@ -529,7 +537,7 @@ function VerifyStage(props: VerifyStageProps) {
           onPress={() => otpInputRef.current?.focus()}
           style={styles.otpRow}
         >
-          {Array.from({ length: 6 }).map((_, i) => {
+          {Array.from({ length: OTP_LENGTH }).map((_, i) => {
             const digit = code[i] ?? '';
             const isFocusedCell = i === code.length;
             return (
@@ -553,7 +561,7 @@ function VerifyStage(props: VerifyStageProps) {
             onChangeText={onCodeChange}
             keyboardType="number-pad"
             textContentType="oneTimeCode"
-            maxLength={6}
+            maxLength={OTP_LENGTH}
             style={styles.hiddenOtpInput}
             accessibilityLabel="Verification code input"
           />

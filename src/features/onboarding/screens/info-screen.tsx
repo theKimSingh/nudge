@@ -16,9 +16,9 @@ import { PageIndicator } from '../components/page-indicator';
 import { PageTurnButton } from '../components/page-turn-button';
 
 const FEATURES = [
-  { icon: 'checkmark.circle.fill' as const, label: 'Plan in seconds.' },
-  { icon: 'bell.fill' as const, label: 'Stay in flow.' },
-  { icon: 'lock.fill' as const, label: 'Nudges that respect your time.' },
+  { icon: 'checkmark.circle.fill' as const, label: 'Talk it out — no typing.' },
+  { icon: 'bell.fill' as const, label: 'Reminders that flex with your day.' },
+  { icon: 'lock.fill' as const, label: "Quiet when you're focused." },
 ];
 
 export function InfoScreen() {
@@ -50,7 +50,7 @@ export function InfoScreen() {
 
           <FadeSlideIn delay={0.3}>
             <ThemedText type="sen-display" style={styles.headline}>
-              Tiny nudges, real momentum.
+              From your voice to your day.
             </ThemedText>
           </FadeSlideIn>
 

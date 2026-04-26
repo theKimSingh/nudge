@@ -1,6 +1,7 @@
-import { router } from 'expo-router';
-import { useEffect, useRef, useState } from 'react';
+import { router, useFocusEffect } from 'expo-router';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   StyleSheet,
@@ -32,9 +33,19 @@ export function ProfileSetupScreen() {
     return () => clearTimeout(timer);
   }, []);
 
+  useFocusEffect(
+    useCallback(() => {
+      return () => {
+        inputRef.current?.blur();
+        Keyboard.dismiss();
+      };
+    }, []),
+  );
+
   const canContinue = draft.trim().length > 0;
 
   function handleNext() {
+    Keyboard.dismiss();
     setName(draft.trim());
     router.push('/(onboarding)/goals');
   }
@@ -83,13 +94,11 @@ export function ProfileSetupScreen() {
                 <PageIndicator current={1} total={3} />
               </FadeSlideIn>
             </View>
-            <FadeSlideIn delay={0.4} fromBottom>
-              <PageTurnButton
-                label="Next"
-                onPress={handleNext}
-                disabled={!canContinue}
-              />
-            </FadeSlideIn>
+            <PageTurnButton
+              label="Next"
+              onPress={handleNext}
+              disabled={!canContinue}
+            />
           </View>
         </KeyboardAvoidingView>
       </SafeAreaView>

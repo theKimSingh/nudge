@@ -1,11 +1,6 @@
-import { ReactNode, useEffect } from 'react';
-import Animated, {
-  Easing,
-  useAnimatedStyle,
-  useSharedValue,
-  withDelay,
-  withTiming,
-} from 'react-native-reanimated';
+import { useFocusEffect } from 'expo-router';
+import { ReactNode, useCallback, useRef } from 'react';
+import { Animated, Easing } from 'react-native';
 
 type Props = {
   children: ReactNode;
@@ -14,19 +9,36 @@ type Props = {
 };
 
 export function FadeSlideIn({ children, delay = 0, fromBottom = false }: Props) {
-  const opacity = useSharedValue(0);
-  const offset = useSharedValue(fromBottom ? 30 : -20);
+  const initialOffset = fromBottom ? 30 : -20;
+  const opacity = useRef(new Animated.Value(0)).current;
+  const offset = useRef(new Animated.Value(initialOffset)).current;
 
-  useEffect(() => {
-    const config = { duration: 500, easing: Easing.out(Easing.cubic) };
-    opacity.value = withDelay(delay * 1000, withTiming(1, config));
-    offset.value = withDelay(delay * 1000, withTiming(0, config));
-  }, [delay, opacity, offset]);
+  useFocusEffect(
+    useCallback(() => {
+      opacity.setValue(0);
+      offset.setValue(initialOffset);
+      Animated.parallel([
+        Animated.timing(opacity, {
+          toValue: 1,
+          duration: 500,
+          delay: delay * 1000,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+        Animated.timing(offset, {
+          toValue: 0,
+          duration: 500,
+          delay: delay * 1000,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+      ]).start();
+    }, [delay, initialOffset, opacity, offset]),
+  );
 
-  const animatedStyle = useAnimatedStyle(() => ({
-    opacity: opacity.value,
-    transform: [{ translateY: offset.value }],
-  }));
-
-  return <Animated.View style={animatedStyle}>{children}</Animated.View>;
+  return (
+    <Animated.View style={{ opacity, transform: [{ translateY: offset }] }}>
+      {children}
+    </Animated.View>
+  );
 }

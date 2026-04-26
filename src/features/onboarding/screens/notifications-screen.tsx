@@ -1,6 +1,6 @@
 import { router } from 'expo-router';
 import { useState } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, { Defs, LinearGradient, Path, Stop } from 'react-native-svg';
 
@@ -30,13 +30,13 @@ export function NotificationsScreen() {
       if (action === 'enable') {
         await requestNotificationPermission();
       }
-      try {
-        await persistSession(pendingSession, { name, goal });
-      } catch {
-        // TODO(supabase): replace with real persistSession + redirect.
-        // While auth is stubbed, treat onboarding as completed and exit to tabs.
-      }
+      await persistSession(pendingSession, { name, goal });
       router.replace('/(tabs)/home');
+    } catch (err) {
+      Alert.alert(
+        'Could not finish setup',
+        err instanceof Error ? err.message : 'Something went wrong.',
+      );
     } finally {
       setBusy(null);
     }
@@ -64,7 +64,7 @@ export function NotificationsScreen() {
 
           <FadeSlideIn delay={0.3}>
             <ThemedText type="sen-large-title" style={styles.headline}>
-              A gentle nudge.
+              Turn on reminders?
             </ThemedText>
             <ThemedText
               type="sen-footnote"
@@ -72,7 +72,7 @@ export function NotificationsScreen() {
               darkColor={Colors.dark.textSecondary}
               style={styles.subhead}
             >
-              Notifications that actually help you stay in flow.
+              We'll nudge you when a task slips. Quiet otherwise.
             </ThemedText>
           </FadeSlideIn>
 

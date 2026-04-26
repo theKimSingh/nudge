@@ -30,7 +30,7 @@ export function WelcomeScreen() {
           <FadeSlideIn delay={0.35}>
             <View style={styles.textBlock}>
               <ThemedText type="sen-display" style={styles.headline}>
-                A calmer way to plan.
+                Speak your day. Nudge plans it.
               </ThemedText>
               <ThemedText
                 type="sen-body"
@@ -38,7 +38,7 @@ export function WelcomeScreen() {
                 lightColor={Colors.light.textSecondary}
                 darkColor={Colors.dark.textSecondary}
               >
-                Built to help you think clearly and follow through.
+                Sixty seconds in the morning is all it takes.
               </ThemedText>
             </View>
           </FadeSlideIn>

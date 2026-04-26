@@ -27,7 +27,7 @@ const OPTIONS: readonly GoalOption[] = [
     key: 'work',
     icon: 'briefcase.fill',
     title: 'Work',
-    subtitle: 'Focus on deep work and deliverables',
+    subtitle: 'Deep work and deliverables',
   },
   {
     key: 'study',
@@ -39,7 +39,7 @@ const OPTIONS: readonly GoalOption[] = [
     key: 'balance',
     icon: 'figure.walk',
     title: 'Balance',
-    subtitle: 'Mix focused work with rest',
+    subtitle: 'A mix of work and rest',
   },
 ] as const;
 
@@ -64,15 +64,7 @@ export function GoalsScreen() {
         <View style={styles.content}>
           <FadeSlideIn delay={0.2}>
             <ThemedText type="sen-large-title" style={styles.headline}>
-              How does your day look?
-            </ThemedText>
-            <ThemedText
-              type="sen-footnote"
-              lightColor={Colors.light.textSecondary}
-              darkColor={Colors.dark.textSecondary}
-              style={styles.subhead}
-            >
-              Nudge adapts to fit.
+              What kind of day are you planning?
             </ThemedText>
           </FadeSlideIn>
 
@@ -182,9 +174,6 @@ const styles = StyleSheet.create({
     paddingTop: 24,
   },
   headline: {
-    paddingBottom: 4,
-  },
-  subhead: {
     paddingBottom: 24,
   },
   optionList: {
