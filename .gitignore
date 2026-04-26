@@ -37,3 +37,7 @@ expo-env.d.ts
 Nudge.xcodeproj/
 Nudge.xcworkspace/
 .swiftpm/
+
+backend/__pycache__
+backend/venv
+backend/.env

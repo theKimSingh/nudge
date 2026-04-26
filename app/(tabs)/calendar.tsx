@@ -1,7 +1,8 @@
 import React, { useState, useCallback, useMemo } from 'react';
 import { StyleSheet, View, Text, TouchableOpacity, SafeAreaView, TextInput, Alert, ActivityIndicator, Modal, KeyboardAvoidingView, Platform, Dimensions } from 'react-native';
+import { StyleSheet, View, Text, TouchableOpacity, SafeAreaView, TextInput, Alert, ActivityIndicator, Modal, KeyboardAvoidingView, Platform, Dimensions } from 'react-native';
 import { Calendar, CalendarList, WeekCalendar, CalendarProvider } from 'react-native-calendars';
-import { fetchAndParseICS, MarkedDates } from '@/utils/calendarParser';
+import { fetchAndParseICS, parseICSString, MarkedDates } from '@/utils/calendarParser';
 import { ScrollView } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 
@@ -25,6 +26,9 @@ export default function CalendarScreen() {
   const [loading, setLoading] = useState(false);
   const [currentDate, setCurrentDate] = useState(getLocalDateString(new Date()));
   const [viewMode, setViewMode] = useState<'day' | 'week' | 'month'>('month');
+  
+  const [magicText, setMagicText] = useState('');
+  const [magicLoading, setMagicLoading] = useState(false);
   
   const [isAddEventVisible, setIsAddEventVisible] = useState(false);
   const [newEventTitle, setNewEventTitle] = useState('');
@@ -51,6 +55,50 @@ export default function CalendarScreen() {
       Alert.alert('Error', 'Failed to import calendar events.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleMagicImport = async () => {
+    if (!magicText.trim()) {
+      Alert.alert('Error', 'Please enter your schedule text');
+      return;
+    }
+
+    setMagicLoading(true);
+    try {
+      // NOTE: Using localhost for iOS simulator, or 10.0.2.2 for Android emulator
+      const apiUrl = Platform.OS === 'android' ? 'http://10.0.2.2:8000/generate-ics' : 'http://localhost:8000/generate-ics';
+      
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: magicText })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Backend error: ${response.statusText}`);
+      }
+
+      const icsData = await response.text();
+      const newMarkedDates = parseICSString(icsData);
+      
+      setMarkedDates(prev => {
+        const merged = { ...prev };
+        for (const [dateStr, dayData] of Object.entries(newMarkedDates)) {
+          if (!merged[dateStr]) {
+            merged[dateStr] = { events: [] };
+          }
+          merged[dateStr].events.push(...dayData.events);
+        }
+        return merged;
+      });
+
+      Alert.alert('Success', 'Magic schedule imported!');
+      setMagicText('');
+    } catch (error: any) {
+      Alert.alert('Error', error.message || 'Failed to import magic schedule.');
+    } finally {
+      setMagicLoading(false);
     }
   };
 
@@ -291,6 +339,25 @@ export default function CalendarScreen() {
             </TouchableOpacity>
           )}
         </View>
+
+        {/* Magic Import Section */}
+        <View style={styles.magicImportContainer}>
+          <TextInput
+            style={styles.magicInput}
+            placeholder="Paste raw schedule text..."
+            placeholderTextColor="#888"
+            value={magicText}
+            onChangeText={setMagicText}
+            multiline={true}
+          />
+          {magicLoading ? (
+            <ActivityIndicator style={{ marginLeft: 10 }} size="small" color="#000" />
+          ) : (
+            <TouchableOpacity style={styles.magicImportButton} onPress={handleMagicImport}>
+              <Text style={styles.magicImportButtonText}>AI Import</Text>
+            </TouchableOpacity>
+          )}
+        </View>
       </View>
 
       {/* Add Event Modal */}
@@ -513,6 +580,20 @@ const styles = StyleSheet.create({
   importContainer: {
     flexDirection: 'row',
     marginTop: 'auto',
+    marginBottom: 10,
+    alignItems: 'center',
+    backgroundColor: '#fff',
+    borderRadius: 20,
+    paddingHorizontal: 15,
+    paddingVertical: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  magicImportContainer: {
+    flexDirection: 'row',
     marginBottom: 20,
     alignItems: 'center',
     backgroundColor: '#fff',
@@ -524,6 +605,24 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.1,
     shadowRadius: 4,
     elevation: 3,
+  },
+  magicInput: {
+    flex: 1,
+    fontSize: 14,
+    color: '#000',
+    maxHeight: 60,
+  },
+  magicImportButton: {
+    backgroundColor: '#7b2cbf', // A nice purple for AI
+    paddingHorizontal: 15,
+    paddingVertical: 8,
+    borderRadius: 15,
+    marginLeft: 10,
+  },
+  magicImportButtonText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
   },
   input: {
     flex: 1,
