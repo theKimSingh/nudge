@@ -13,12 +13,12 @@ export default function HomeScreen() {
       headerBackgroundColor={{ light: '#A1CEDC', dark: '#1D3D47' }}
       headerImage={
         <Image
-          source={require('@/assets/images/partial-react-logo.png')}
-          style={styles.reactLogo}
+          source={require('@/assets/images/logo.png')}
+          style={styles.logo}
         />
       }>
       <ThemedView style={styles.titleContainer}>
-        <ThemedText type="title">Welcome!</ThemedText>
+        <ThemedText type="title">Welcome to Nudge!</ThemedText>
         <HelloWave />
       </ThemedView>
       <ThemedView style={styles.stepContainer}>
@@ -61,7 +61,7 @@ export default function HomeScreen() {
         </Link>
 
         <ThemedText>
-          {`Tap the Explore tab to learn more about what's included in this starter app.`}
+          {`Tap the Explore tab to learn more about what's included in the Nudge app.`}
         </ThemedText>
       </ThemedView>
       <ThemedView style={styles.stepContainer}>
@@ -88,11 +88,11 @@ const styles = StyleSheet.create({
     gap: 8,
     marginBottom: 8,
   },
-  reactLogo: {
-    height: 178,
-    width: 290,
-    bottom: 0,
-    left: 0,
+  logo: {
+    height: 100,
+    width: 100,
+    bottom: 20,
+    left: 20,
     position: 'absolute',
   },
 });

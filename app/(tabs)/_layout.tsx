@@ -1,12 +1,26 @@
 import { Tabs } from 'expo-router';
 import React from 'react';
-import { StyleSheet, View } from 'react-native';
+import { StyleSheet, View, Image, Text } from 'react-native';
 import { BlurView } from 'expo-blur';
 
 import { HapticTab } from '@/components/haptic-tab';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+
+function LogoTitle() {
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+      <Image
+        source={require('../../assets/images/logo.png')}
+        style={{ width: 30, height: 30 }}
+        resizeMode="contain"
+      />
+      <Text style={{ fontSize: 20, fontWeight: 'bold' }}>Nudge</Text>
+    </View>
+  );
+}
+
 
 export default function TabLayout() {
   const colorScheme = useColorScheme();
@@ -15,8 +29,18 @@ export default function TabLayout() {
     <Tabs
       screenOptions={{
         tabBarActiveTintColor: Colors[colorScheme ?? 'light'].tint,
-        headerShown: false,
+        headerShown: true,
+        headerTitle: () => <LogoTitle />,
+        headerTransparent: true,
+        headerBackground: () => (
+          <BlurView
+            tint="light"
+            intensity={60}
+            style={StyleSheet.absoluteFill}
+          />
+        ),
         tabBarButton: HapticTab,
+
         tabBarStyle: styles.tabBar,
         tabBarBackground: () => (
           <View style={StyleSheet.absoluteFill}>
@@ -24,9 +48,9 @@ export default function TabLayout() {
               tint="light"
               intensity={80}
               style={[
-                StyleSheet.absoluteFill, 
-                { 
-                  borderRadius: 30, 
+                StyleSheet.absoluteFill,
+                {
+                  borderRadius: 30,
                   overflow: 'hidden',
                   borderWidth: 1,
                   borderColor: 'rgba(255, 255, 255, 0.5)',
@@ -41,6 +65,7 @@ export default function TabLayout() {
         name="index"
         options={{
           title: 'Home',
+          headerShown: false, // Index uses ParallaxScrollView header
           tabBarIcon: ({ color }) => <IconSymbol size={28} name="house.fill" color={color} />,
         }}
       />
@@ -55,6 +80,8 @@ export default function TabLayout() {
         name="calendar"
         options={{
           title: 'Calendar',
+          headerShown: false, // Index uses ParallaxScrollView header
+
           tabBarIcon: ({ color }) => <IconSymbol size={28} name="calendar" color={color} />,
         }}
       />
