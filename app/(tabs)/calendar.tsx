@@ -1,6 +1,5 @@
 import React, { useState, useCallback, useMemo } from 'react';
 import { StyleSheet, View, Text, TouchableOpacity, SafeAreaView, TextInput, Alert, ActivityIndicator, Modal, KeyboardAvoidingView, Platform, Dimensions } from 'react-native';
-import { StyleSheet, View, Text, TouchableOpacity, SafeAreaView, TextInput, Alert, ActivityIndicator, Modal, KeyboardAvoidingView, Platform, Dimensions } from 'react-native';
 import { Calendar, CalendarList, WeekCalendar, CalendarProvider } from 'react-native-calendars';
 import { fetchAndParseICS, parseICSString, MarkedDates } from '@/utils/calendarParser';
 import { ScrollView } from 'react-native';
@@ -26,13 +25,13 @@ export default function CalendarScreen() {
   const [loading, setLoading] = useState(false);
   const [currentDate, setCurrentDate] = useState(getLocalDateString(new Date()));
   const [viewMode, setViewMode] = useState<'day' | 'week' | 'month'>('month');
-  
+
   const [magicText, setMagicText] = useState('');
   const [magicLoading, setMagicLoading] = useState(false);
-  
+
   const [isAddEventVisible, setIsAddEventVisible] = useState(false);
   const [newEventTitle, setNewEventTitle] = useState('');
-  
+
   const [startTime, setStartTime] = useState<Date>(new Date());
   const [endTime, setEndTime] = useState<Date>(new Date(Date.now() + 3600000));
   const [repeatFrequency, setRepeatFrequency] = useState<'none' | 'daily' | 'weekly' | 'monthly'>('none');
@@ -68,7 +67,7 @@ export default function CalendarScreen() {
     try {
       // NOTE: Using localhost for iOS simulator, or 10.0.2.2 for Android emulator
       const apiUrl = Platform.OS === 'android' ? 'http://10.0.2.2:8000/generate-ics' : 'http://localhost:8000/generate-ics';
-      
+
       const response = await fetch(apiUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -81,7 +80,7 @@ export default function CalendarScreen() {
 
       const icsData = await response.text();
       const newMarkedDates = parseICSString(icsData);
-      
+
       setMarkedDates(prev => {
         const merged = { ...prev };
         for (const [dateStr, dayData] of Object.entries(newMarkedDates)) {
@@ -129,7 +128,7 @@ export default function CalendarScreen() {
       Alert.alert('Error', 'Please enter an event title');
       return;
     }
-    
+
     const randomColor = ['#fdfd96', '#ffb7b2', '#a2e4b8', '#e2f0cb', '#cbaacb', '#b5ead7', '#ffdac1', '#9bf6ff'][Math.floor(Math.random() * 8)];
 
     const timeStr = `${startTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} - ${endTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
@@ -137,10 +136,10 @@ export default function CalendarScreen() {
 
     setMarkedDates(prev => {
       const newDates = { ...prev };
-      
+
       const [year, month, day] = currentDate.split('-').map(Number);
       let curr = new Date(year, month - 1, day);
-      
+
       const endLimit = repeatFrequency === 'none' ? curr : endRepeatDate;
       const twoYearsFromNow = new Date();
       twoYearsFromNow.setFullYear(twoYearsFromNow.getFullYear() + 2);
@@ -149,7 +148,7 @@ export default function CalendarScreen() {
       while (curr <= safeEndLimit) {
         const dateStr = getLocalDateString(curr);
         const dayData = newDates[dateStr] || { events: [] };
-        
+
         newDates[dateStr] = {
           events: [...dayData.events, { title: eventText, color: randomColor }],
         };
@@ -163,7 +162,7 @@ export default function CalendarScreen() {
 
       return newDates;
     });
-    
+
     setNewEventTitle('');
     setRepeatFrequency('none');
     setIsAddEventVisible(false);
@@ -221,8 +220,8 @@ export default function CalendarScreen() {
 
         <View style={styles.viewToggles}>
           {(['day', 'week', 'month'] as const).map(mode => (
-            <TouchableOpacity 
-              key={mode} 
+            <TouchableOpacity
+              key={mode}
               style={[styles.toggleBtn, viewMode === mode && styles.toggleBtnActive]}
               onPress={() => setViewMode(mode)}
             >
@@ -367,7 +366,7 @@ export default function CalendarScreen() {
         transparent={true}
         onRequestClose={() => setIsAddEventVisible(false)}
       >
-        <KeyboardAvoidingView 
+        <KeyboardAvoidingView
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           style={styles.modalOverlay}
         >
@@ -379,7 +378,7 @@ export default function CalendarScreen() {
                 return new Date(y, m - 1, d).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
               })()}
             </Text>
-            
+
             <TextInput
               style={styles.modalInput}
               placeholder="Event Title"
@@ -397,7 +396,7 @@ export default function CalendarScreen() {
                 </Text>
               </TouchableOpacity>
             </View>
-            
+
             <View style={styles.formRow}>
               <Text style={styles.formLabel}>End</Text>
               <TouchableOpacity style={styles.timeButton} onPress={() => setShowPicker('end')}>
@@ -411,8 +410,8 @@ export default function CalendarScreen() {
               <Text style={styles.formLabel}>Repeat</Text>
               <View style={styles.pillsRow}>
                 {(['none', 'daily', 'weekly', 'monthly'] as const).map(freq => (
-                  <TouchableOpacity 
-                    key={freq} 
+                  <TouchableOpacity
+                    key={freq}
                     style={[styles.pill, repeatFrequency === freq && styles.pillActive]}
                     onPress={() => setRepeatFrequency(freq)}
                   >
@@ -457,10 +456,10 @@ export default function CalendarScreen() {
                 )}
               </View>
             )}
-            
+
             <View style={styles.modalButtons}>
-              <TouchableOpacity 
-                style={styles.modalCancelButton} 
+              <TouchableOpacity
+                style={styles.modalCancelButton}
                 onPress={() => {
                   setIsAddEventVisible(false);
                   setNewEventTitle('');
@@ -468,9 +467,9 @@ export default function CalendarScreen() {
               >
                 <Text style={styles.modalCancelButtonText}>Cancel</Text>
               </TouchableOpacity>
-              
-              <TouchableOpacity 
-                style={styles.modalAddButton} 
+
+              <TouchableOpacity
+                style={styles.modalAddButton}
                 onPress={handleAddEvent}
               >
                 <Text style={styles.modalAddButtonText}>Add</Text>
