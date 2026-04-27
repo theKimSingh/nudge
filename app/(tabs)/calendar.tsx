@@ -693,9 +693,11 @@ const styles = StyleSheet.create({
     color: '#000', // black text for events to match design
   },
   importContainer: {
+    position: 'absolute',
+    bottom: 100, // Same level as the floating button
+    left: 20,
+    right: 100, // Leave space for the floating button on the right
     flexDirection: 'row',
-    marginTop: 'auto',
-    marginBottom: 10,
     alignItems: 'center',
     backgroundColor: '#fff',
     borderRadius: 20,

@@ -1,6 +1,6 @@
-import { Tabs } from 'expo-router';
+import { Tabs, useRouter } from 'expo-router';
 import React from 'react';
-import { StyleSheet, View, Image, Text } from 'react-native';
+import { StyleSheet, View, Image, Text, TouchableOpacity } from 'react-native';
 import { BlurView } from 'expo-blur';
 
 import { HapticTab } from '@/components/haptic-tab';
@@ -24,68 +24,80 @@ function LogoTitle() {
 
 export default function TabLayout() {
   const colorScheme = useColorScheme();
+  const router = useRouter();
 
   return (
-    <Tabs
-      screenOptions={{
-        tabBarActiveTintColor: Colors[colorScheme ?? 'light'].tint,
-        headerShown: true,
-        headerTitle: () => <LogoTitle />,
-        headerTransparent: true,
-        headerBackground: () => (
-          <BlurView
-            tint="light"
-            intensity={60}
-            style={StyleSheet.absoluteFill}
-          />
-        ),
-        tabBarButton: HapticTab,
-
-        tabBarStyle: styles.tabBar,
-        tabBarBackground: () => (
-          <View style={StyleSheet.absoluteFill}>
+    <View style={{ flex: 1 }}>
+      <Tabs
+        screenOptions={{
+          tabBarActiveTintColor: Colors[colorScheme ?? 'light'].tint,
+          headerShown: true,
+          headerTitle: () => <LogoTitle />,
+          headerTransparent: true,
+          headerBackground: () => (
             <BlurView
               tint="light"
-              intensity={80}
-              style={[
-                StyleSheet.absoluteFill,
-                {
-                  borderRadius: 30,
-                  overflow: 'hidden',
-                  borderWidth: 1,
-                  borderColor: 'rgba(255, 255, 255, 0.5)',
-                  backgroundColor: 'rgba(255, 255, 255, 0.2)'
-                }
-              ]}
+              intensity={60}
+              style={StyleSheet.absoluteFill}
             />
-          </View>
-        ),
-      }}>
-      <Tabs.Screen
-        name="index"
-        options={{
-          title: 'Home',
-          headerShown: false, // Index uses ParallaxScrollView header
-          tabBarIcon: ({ color }) => <IconSymbol size={28} name="house.fill" color={color} />,
-        }}
-      />
-      <Tabs.Screen
-        name="explore"
-        options={{
-          title: 'Explore',
-          tabBarIcon: ({ color }) => <IconSymbol size={28} name="paperplane.fill" color={color} />,
-        }}
-      />
-      <Tabs.Screen
-        name="calendar"
-        options={{
-          title: 'Calendar',
-          headerShown: false, // Index uses ParallaxScrollView header
+          ),
+          tabBarButton: HapticTab,
 
-          tabBarIcon: ({ color }) => <IconSymbol size={28} name="calendar" color={color} />,
-        }}
-      />
-    </Tabs>
+          tabBarStyle: styles.tabBar,
+          tabBarBackground: () => (
+            <View style={StyleSheet.absoluteFill}>
+              <BlurView
+                tint="light"
+                intensity={80}
+                style={[
+                  StyleSheet.absoluteFill,
+                  {
+                    borderRadius: 30,
+                    overflow: 'hidden',
+                    borderWidth: 1,
+                    borderColor: 'rgba(255, 255, 255, 0.5)',
+                    backgroundColor: 'rgba(255, 255, 255, 0.2)'
+                  }
+                ]}
+              />
+            </View>
+          ),
+        }}>
+        <Tabs.Screen
+          name="index"
+          options={{
+            title: 'Home',
+            headerShown: false, // Index uses ParallaxScrollView header
+            tabBarIcon: ({ color }) => <IconSymbol size={28} name="house.fill" color={color} />,
+          }}
+        />
+        <Tabs.Screen
+          name="explore"
+          options={{
+            title: 'Explore',
+            tabBarIcon: ({ color }) => <IconSymbol size={28} name="paperplane.fill" color={color} />,
+          }}
+        />
+        <Tabs.Screen
+          name="calendar"
+          options={{
+            title: 'Calendar',
+            headerShown: false, // Index uses ParallaxScrollView header
+
+            tabBarIcon: ({ color }) => <IconSymbol size={28} name="calendar" color={color} />,
+          }}
+        />
+      </Tabs>
+
+      {/* Floating Circle Button */}
+      <TouchableOpacity
+        style={styles.floatingButton}
+        onPress={() => router.push('/voice-chat')}
+        activeOpacity={0.8}
+      >
+        <Text style={styles.buttonEmoji}>🎙️</Text>
+      </TouchableOpacity>
+    </View>
   );
 }
 
@@ -108,4 +120,19 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.15,
     shadowRadius: 20,
   },
-});
+  floatingButton: {
+    position: 'absolute',
+    bottom: 100, // Moved up slightly more
+    right: 30,
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: '#CC0000', // Darker red
+    justifyContent: 'center',
+    alignItems: 'center',
+    // Removed shadow/glow effects
+  },
+  buttonEmoji: {
+    fontSize: 24,
+    textAlign: 'center',
+  },
