@@ -28,6 +28,15 @@ const MAPPING = {
   'envelope.fill': 'mail',
   'lock.fill': 'lock',
   'checkmark': 'check',
+  'pencil': 'edit',
+  'plus': 'add',
+  'list.bullet': 'format-list-bulleted',
+  'calendar': 'calendar-today',
+  'minus.circle.fill': 'remove-circle',
+  'line.3.horizontal': 'drag-handle',
+  'xmark': 'close',
+  'clock': 'access-time',
+  'arrow.clockwise': 'repeat',
 } as IconMapping;
 
 /**

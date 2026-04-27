@@ -1,35 +1,15 @@
 import { Tabs } from 'expo-router';
-import React from 'react';
 
-import { HapticTab } from '@/src/components/haptic-tab';
-import { IconSymbol } from '@/src/components/ui/icon-symbol';
-import { Colors } from '@/src/constants/theme';
-import { useColorScheme } from '@/src/hooks/use-color-scheme';
+import { FloatingTabBar } from '@/src/components/floating-tab-bar';
 
 export default function TabLayout() {
-  const colorScheme = useColorScheme();
-
   return (
     <Tabs
-      screenOptions={{
-        tabBarActiveTintColor: Colors[colorScheme ?? 'light'].tint,
-        headerShown: false,
-        tabBarButton: HapticTab,
-      }}>
-      <Tabs.Screen
-        name="home"
-        options={{
-          title: 'Home',
-          tabBarIcon: ({ color }) => <IconSymbol size={28} name="house.fill" color={color} />,
-        }}
-      />
-      <Tabs.Screen
-        name="supabase"
-        options={{
-          title: 'Supabase',
-          tabBarIcon: ({ color }) => <IconSymbol size={28} name="cloud.fill" color={color} />,
-        }}
-      />
+      screenOptions={{ headerShown: false }}
+      tabBar={(props) => <FloatingTabBar {...props} />}
+    >
+      <Tabs.Screen name="todo" options={{ title: 'ToDo' }} />
+      <Tabs.Screen name="calendar" options={{ title: 'Calendar' }} />
     </Tabs>
   );
 }

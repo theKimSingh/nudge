@@ -88,7 +88,7 @@ export function AuthScreen() {
         setPendingSession(session);
         const profile = await getProfile(session.userId);
         if (profile?.onboarded) {
-          router.replace('/(tabs)/home');
+          router.replace('/(tabs)/todo');
         } else {
           router.push('/(onboarding)/profile-setup');
         }

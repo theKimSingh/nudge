@@ -31,7 +31,7 @@ export function NotificationsScreen() {
         await requestNotificationPermission();
       }
       await persistSession(pendingSession, { name, goal });
-      router.replace('/(tabs)/home');
+      router.replace('/(tabs)/todo');
     } catch (err) {
       Alert.alert(
         'Could not finish setup',

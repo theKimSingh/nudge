@@ -34,6 +34,6 @@ export default function Index() {
   if (sessionLoading) return null;
   if (!session) return <Redirect href="/(onboarding)/welcome" />;
   if (profileLoading) return null;
-  if (profile?.onboarded) return <Redirect href="/(tabs)/home" />;
+  if (profile?.onboarded) return <Redirect href="/(tabs)/todo" />;
   return <Redirect href="/(onboarding)/profile-setup" />;
 }
