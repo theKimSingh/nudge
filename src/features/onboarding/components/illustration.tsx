@@ -1,14 +1,13 @@
 import { StyleSheet, View } from 'react-native';
-import { SvgXml } from 'react-native-svg';
 
-import cloudsSvg from '@/src/assets/illustrations/clouds.svg';
-import hotairBalloonSvg from '@/src/assets/illustrations/hotair_balloon.svg';
-import tasksCompleteSvg from '@/src/assets/illustrations/tasks_complete.svg';
+import Clouds from '@/src/assets/illustrations/clouds.svg';
+import HotAirBalloon from '@/src/assets/illustrations/hotair_balloon.svg';
+import TasksComplete from '@/src/assets/illustrations/tasks_complete.svg';
 
 const SVGS = {
-  tasks_complete: tasksCompleteSvg,
-  hotair_balloon: hotairBalloonSvg,
-  clouds: cloudsSvg,
+  tasks_complete: TasksComplete,
+  hotair_balloon: HotAirBalloon,
+  clouds: Clouds,
 } as const;
 
 export type IllustrationName = keyof typeof SVGS;
@@ -20,9 +19,11 @@ type Props = {
 };
 
 export function Illustration({ name, width, height }: Props) {
+  const Svg = SVGS[name];
+
   return (
-    <View style={[styles.wrapper, { width, height: height ?? width }]} accessible={false}>
-      <SvgXml xml={SVGS[name]} width="100%" height="100%" />
+    <View style={[styles.wrapper, { width, height: height ?? width }]}>
+      <Svg width={width} height={height ?? width} />
     </View>
   );
 }

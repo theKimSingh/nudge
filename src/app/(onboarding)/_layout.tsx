@@ -1,6 +1,6 @@
 import { Stack } from 'expo-router';
 
-import { ColorSchemeOverride } from '@/src/hooks/color-scheme-override';
+import { ColorSchemeOverride } from '@/src//hooks/color-scheme-override';
 import { OnboardingProvider } from '@/src/features/onboarding/context/onboarding-context';
 
 export default function OnboardingLayout() {
