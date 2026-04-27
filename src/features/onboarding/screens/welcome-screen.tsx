@@ -52,7 +52,10 @@ export function WelcomeScreen() {
           </View>
           <PageTurnButton
             label="Next"
-            onPress={() => router.push('/(onboarding)/info')}
+            onPress={() => {
+              console.log('WelcomeScreen: Next button pressed');
+              router.push('/(onboarding)/info');
+            }}
           />
         </View>
       </SafeAreaView>
@@ -93,6 +96,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-end',
     justifyContent: 'space-between',
+    zIndex: 10,
   },
   indicator: {
     paddingLeft: 24,
