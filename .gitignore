@@ -10,10 +10,14 @@ web-build/
 ios/
 android/
 
-# Env
+# Python venv for the FastAPI backend
+backend/.venv/
+__pycache__/
+
+# Env (commit only .env.example)
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
 
 # Logs
 npm-debug.*
