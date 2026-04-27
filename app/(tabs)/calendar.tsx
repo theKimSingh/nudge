@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import { StyleSheet, View, Text, TouchableOpacity, SafeAreaView, TextInput, Alert, ActivityIndicator, Modal, KeyboardAvoidingView, Platform, Dimensions } from 'react-native';
 import { Calendar, CalendarList, WeekCalendar, CalendarProvider } from 'react-native-calendars';
 import { fetchAndParseICS, parseICSString, MarkedDates } from '@/utils/calendarParser';
@@ -8,8 +8,7 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 const SCREEN_WIDTH = Dimensions.get('window').width;
 const DAY_WIDTH = (SCREEN_WIDTH - 32) / 7; // 32 is paddingHorizontal: 16 * 2
 
-
-const BG_COLOR = '#e8e6e1'; // Warm off-white
+const BG_COLOR = '#f0f0f0'; // Light gray
 const TEXT_COLOR = '#000000';
 
 const getLocalDateString = (date: Date) => {
@@ -103,7 +102,7 @@ export default function CalendarScreen() {
 
   const getMonthYearString = (dateString: string) => {
     const date = new Date(dateString);
-    const month = date.toLocaleString('default', { month: 'short' });
+    const month = date.toLocaleString('default', { month: 'long' });
     const year = date.getFullYear();
     return { month, year };
   };
@@ -168,26 +167,107 @@ export default function CalendarScreen() {
     setIsAddEventVisible(false);
   };
 
+  const getWeekHasEvents = () => {
+    // Get the start of the week (Sunday) for current date
+    const [year, month, day] = currentDate.split('-').map(Number);
+    const date = new Date(year, month - 1, day);
+    const dayOfWeek = date.getDay();
+    const diff = date.getDate() - dayOfWeek;
+    const sundayDate = new Date(year, month - 1, diff);
+
+    // Check all 7 days of the week
+    for (let i = 0; i < 7; i++) {
+      const checkDate = new Date(sundayDate);
+      checkDate.setDate(checkDate.getDate() + i);
+      const dateStr = getLocalDateString(checkDate);
+      if (markedDates[dateStr]?.events?.length > 0) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const getWeekDateRange = () => {
+    // Get the start of the week (Sunday) for current date
+    const [year, month, day] = currentDate.split('-').map(Number);
+    const date = new Date(year, month - 1, day);
+    const dayOfWeek = date.getDay();
+    const diff = date.getDate() - dayOfWeek;
+    const sundayDate = new Date(year, month - 1, diff);
+
+    // Get end of week (Saturday)
+    const saturdayDate = new Date(sundayDate);
+    saturdayDate.setDate(saturdayDate.getDate() + 6);
+
+    const startStr = sundayDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+    const endStr = saturdayDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+
+    return `${startStr} - ${endStr}`;
+  };
+
+  const [initialLoading, setInitialLoading] = useState(true);
+
+  useEffect(() => {
+    const load = async () => {
+      setInitialLoading(true);
+
+      // simulate fetch OR call your real fetch here
+      await new Promise(res => setTimeout(res, 1500));
+
+      setInitialLoading(false);
+    };
+
+    load();
+  }, []);
 
   const renderDay = useCallback(({ date, state }: any) => {
     const dateString = date?.dateString;
     if (!dateString) return <View style={{ width: DAY_WIDTH, height: 100 }} />;
 
-    const dayData = markedDates[dateString];
     const isToday = state === 'today';
     const isSelectedMonth = state !== 'disabled';
 
+    if (initialLoading) {
+      return (
+        <View style={[styles.dayCellContainer, { backgroundColor: '#e5e5e5' }]}>
+          <View style={{
+            width: 20,
+            height: 20,
+            borderRadius: 10,
+            backgroundColor: '#d0d0d0',
+            marginBottom: 6
+          }} />
+          <View style={{ width: '80%', height: 6, backgroundColor: '#d0d0d0', marginBottom: 4 }} />
+          <View style={{ width: '60%', height: 6, backgroundColor: '#d0d0d0' }} />
+        </View>
+      );
+    }
+
+    const dayData = markedDates[dateString];
+
     return (
-      <View style={[styles.dayCellContainer, !isSelectedMonth && { opacity: 0.3 }]}>
-        <View style={[styles.dateNumberContainer, isToday && styles.todayDateNumberContainer]}>
-          <Text style={[styles.dateText, !isSelectedMonth && styles.disabledDateText, isToday && styles.todayDateText]}>
+      <View style={[
+        styles.dayCellContainer,
+        isToday && styles.todayDayCellContainer,
+        !isSelectedMonth && styles.disabledDayCellContainer
+      ]}>
+        <View style={[
+          styles.dateNumberContainer,
+          isToday && styles.todayDateNumberContainer
+        ]}>
+          <Text style={[
+            styles.dateText,
+            !isSelectedMonth && styles.disabledDateText,
+            isToday && styles.todayDateText
+          ]}>
             {date?.day}
           </Text>
         </View>
+
         <View style={styles.eventsContainer}>
           {dayData?.events?.map((event, index) => (
             <View key={index} style={[styles.eventPill, { backgroundColor: event.color }]}>
-              <Text style={styles.eventText} numberOfLines={1} ellipsizeMode="tail">
+              <Text style={styles.eventText} numberOfLines={1}>
                 {event.title}
               </Text>
             </View>
@@ -195,7 +275,7 @@ export default function CalendarScreen() {
         </View>
       </View>
     );
-  }, [markedDates]);
+  }, [markedDates, initialLoading]);
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -233,19 +313,27 @@ export default function CalendarScreen() {
         </View>
 
         {viewMode === 'month' && (
-          <CalendarList
-            horizontal={true}
-            pagingEnabled={true}
-            current={currentDate}
-            onVisibleMonthsChange={(months) => {
-              if (months && months[0] && months[0].dateString !== currentDate) {
-                setCurrentDate(months[0].dateString);
-              }
-            }}
-            dayComponent={renderDay}
-            hideArrows={true}
-            renderHeader={() => null}
-            style={styles.calendarContainer}
+          <View>
+            <View style={styles.weekHeaderContainer}>
+              {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(day => (
+                <Text key={day} style={styles.weekHeaderText}>{day}</Text>
+              ))}
+            </View>
+            <CalendarList
+              horizontal={true}
+              pagingEnabled={true}
+              current={currentDate}
+              onVisibleMonthsChange={(months) => {
+                if (months && months[0] && months[0].dateString !== currentDate) {
+                  setCurrentDate(months[0].dateString);
+                }
+              }}
+              dayComponent={renderDay}
+              hideArrows={true}
+              renderHeader={() => null}
+              style={styles.calendarContainer}
+              showNonCurrentDates={true}
+              hideExtraDays={false}
             theme={{
               calendarBackground: 'transparent',
               textSectionTitleColor: '#8c8c8c',
@@ -253,46 +341,52 @@ export default function CalendarScreen() {
               textDayHeaderFontSize: 13,
               'stylesheet.calendar.header': {
                 header: { display: 'none' },
-                week: {
-                  flexDirection: 'row',
-                  justifyContent: 'space-between',
-                  borderBottomWidth: 1,
-                  borderBottomColor: '#e0e0e0',
-                  paddingBottom: 10,
-                  marginBottom: 10,
-                }
+                week: { display: 'none' }
               },
               'stylesheet.day.basic': {
-                base: { width: DAY_WIDTH, height: 100, alignItems: 'center' }
+                base: { width: DAY_WIDTH, height: 100, alignItems: 'center', padding: 0, margin: 0 }
               }
             } as any}
-          />
+            />
+          </View>
         )}
 
         {viewMode === 'week' && (
-          <CalendarProvider date={currentDate} onDateChanged={setCurrentDate}>
-            <WeekCalendar
-              firstDay={0}
-              dayComponent={renderDay}
-              theme={{
-                calendarBackground: 'transparent',
-                'stylesheet.calendar.header': {
-                  header: { display: 'none' },
-                  week: {
-                    flexDirection: 'row',
-                    justifyContent: 'space-between',
-                    borderBottomWidth: 1,
-                    borderBottomColor: '#e0e0e0',
-                    paddingBottom: 10,
-                    marginBottom: 10,
-                  }
-                },
-                'stylesheet.day.basic': {
-                  base: { width: DAY_WIDTH, height: 100, alignItems: 'center' }
-                }
-              } as any}
-            />
-          </CalendarProvider>
+          getWeekHasEvents() ? (
+            <ScrollView style={styles.dayViewContainer} showsVerticalScrollIndicator={false}>
+              <Text style={styles.dayViewDate}>{getWeekDateRange()}</Text>
+              <View style={styles.weekCalendarContainer}>
+                <View style={styles.weekHeaderContainer}>
+                  {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(day => (
+                    <Text key={day} style={styles.weekHeaderText}>{day}</Text>
+                  ))}
+                </View>
+              <CalendarProvider date={currentDate} onDateChanged={setCurrentDate}>
+                <WeekCalendar
+                  firstDay={0}
+                  dayComponent={renderDay}
+                  showNonCurrentDates={true}
+                  hideExtraDays={false}
+                  theme={{
+                    calendarBackground: 'transparent',
+                    'stylesheet.calendar.header': {
+                      header: { display: 'none' },
+                      week: { display: 'none' }
+                  },
+                    'stylesheet.day.basic': {
+                      base: { width: DAY_WIDTH, height: 100, alignItems: 'center', padding: 0, margin: 0 }
+                    }
+                  } as any}
+                />
+              </CalendarProvider>
+              </View>
+            </ScrollView>
+          ) : (
+            <View style={styles.emptyWeekContainer}>
+              <Text style={styles.dayViewDate}>{getWeekDateRange()}</Text>
+              <Text style={styles.noEventsText}>No events scheduled</Text>
+            </View>
+          )
         )}
 
         {viewMode === 'day' && (
@@ -526,10 +620,23 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: TEXT_COLOR,
     alignSelf: 'center',
+    marginBottom: 20,
+  },
+  weekHeaderContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
     marginBottom: 10,
+    paddingHorizontal: 2,
+  },
+  weekHeaderText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#666',
+    width: DAY_WIDTH,
+    textAlign: 'center',
   },
   calendarContainer: {
-    backgroundColor: 'transparent',
+    backgroundColor: '#f0f0f0',
     minHeight: 500, // give enough room for the custom days
   },
   dayCellContainer: {
@@ -537,6 +644,15 @@ const styles = StyleSheet.create({
     height: 90, // adjust this to give more/less room to events
     alignItems: 'center',
     paddingTop: 5,
+    borderWidth: 1,
+    borderColor: '#d0d0d0',
+    backgroundColor: '#fff',
+  },
+  todayDayCellContainer: {
+    backgroundColor: '#fff3e0',
+  },
+  disabledDayCellContainer: {
+    backgroundColor: '#fafafa',
   },
   dateNumberContainer: {
     width: 28,
@@ -558,7 +674,7 @@ const styles = StyleSheet.create({
     color: '#fff',
   },
   disabledDateText: {
-    color: '#b0b0b0',
+    color: '#999999',
   },
   eventsContainer: {
     width: '100%',
@@ -683,6 +799,9 @@ const styles = StyleSheet.create({
   dayEventsList: {
     gap: 12,
   },
+  weekCalendarContainer: {
+    gap: 12,
+  },
   dayEventRow: {
     backgroundColor: '#fff',
     padding: 16,
@@ -702,6 +821,12 @@ const styles = StyleSheet.create({
   emptyDayContainer: {
     padding: 30,
     alignItems: 'center',
+  },
+  emptyWeekContainer: {
+    padding: 30,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 200,
   },
   noEventsText: {
     color: '#888',
