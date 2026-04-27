@@ -1,7 +1,0 @@
-{
-  "name": "nudge-backend",
-  "private": true,
-  "scripts": {
-    "dev": ".venv/bin/python main.py"
-  }
-}

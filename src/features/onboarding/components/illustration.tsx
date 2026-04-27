@@ -1,9 +1,9 @@
 import { StyleSheet, View } from 'react-native';
 import { SvgXml } from 'react-native-svg';
 
-import { cloudsSvg } from '@/assets/illustrations/clouds';
-import { hotairBalloonSvg } from '@/assets/illustrations/hotair_balloon';
-import { tasksCompleteSvg } from '@/assets/illustrations/tasks_complete';
+import cloudsSvg from '@/src/assets/illustrations/clouds.svg';
+import hotairBalloonSvg from '@/src/assets/illustrations/hotair_balloon.svg';
+import tasksCompleteSvg from '@/src/assets/illustrations/tasks_complete.svg';
 
 const SVGS = {
   tasks_complete: tasksCompleteSvg,

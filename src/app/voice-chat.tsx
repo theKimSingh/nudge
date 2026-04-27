@@ -14,7 +14,7 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { IconSymbol } from '@/src/components/ui/icon-symbol';
-import { Colors } from '@/constants/theme';
+import { Colors } from '@/src/constants/theme';
 import { useColorScheme } from '@/src/hooks/use-color-scheme';
 import { ThemedView } from '@/src/components/themed-view';
 import { ThemedText } from '@/src/components/themed-text';
