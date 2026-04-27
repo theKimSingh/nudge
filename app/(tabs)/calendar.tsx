@@ -434,23 +434,35 @@ export default function CalendarScreen() {
         </View>
 
         {/* Magic Import Section */}
-        <View style={styles.magicImportContainer}>
-          <TextInput
-            style={styles.magicInput}
-            placeholder="Paste raw schedule text..."
-            placeholderTextColor="#888"
-            value={magicText}
-            onChangeText={setMagicText}
-            multiline={true}
-          />
-          {magicLoading ? (
-            <ActivityIndicator style={{ marginLeft: 10 }} size="small" color="#000" />
-          ) : (
-            <TouchableOpacity style={styles.magicImportButton} onPress={handleMagicImport}>
-              <Text style={styles.magicImportButtonText}>AI Import</Text>
-            </TouchableOpacity>
-          )}
-        </View>
+        {viewMode !== 'month' && (
+          <View
+            style={[
+              styles.magicImportContainer,
+              {
+                position: 'absolute',
+                bottom: viewMode === 'day' ? 300 : 300,
+                left: 20,
+                right: 20,
+              },
+            ]}
+          >
+            <TextInput
+              style={styles.magicInput}
+              placeholder="Paste raw schedule text..."
+              placeholderTextColor="#888"
+              value={magicText}
+              onChangeText={setMagicText}
+              multiline={true}
+            />
+            {magicLoading ? (
+              <ActivityIndicator style={{ marginLeft: 10 }} size="small" color="#000" />
+            ) : (
+              <TouchableOpacity style={styles.magicImportButton} onPress={handleMagicImport}>
+                <Text style={styles.magicImportButtonText}>AI Import</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
       </View>
 
       {/* Add Event Modal */}
@@ -694,7 +706,7 @@ const styles = StyleSheet.create({
   },
   importContainer: {
     position: 'absolute',
-    bottom: 100, // Same level as the floating button
+    bottom: Platform.OS === 'ios' ? 70 : 100, // Adjust for iOS safe area differences
     left: 20,
     right: 100, // Leave space for the floating button on the right
     flexDirection: 'row',
@@ -711,7 +723,6 @@ const styles = StyleSheet.create({
   },
   magicImportContainer: {
     flexDirection: 'row',
-    marginBottom: 20,
     alignItems: 'center',
     backgroundColor: '#fff',
     borderRadius: 20,
