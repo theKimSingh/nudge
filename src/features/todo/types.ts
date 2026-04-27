@@ -4,11 +4,21 @@ export type RepeatRule = 'none' | 'daily' | 'weekdays' | 'weekly';
 export type Task = {
   id: string;
   title: string;
+  date: string; // YYYY-MM-DD — the calendar day this instance belongs to
   timeMinutes: number;
   durationMinutes: number;
   done: boolean;
   repeat: RepeatRule;
+  seriesId?: string; // shared across instances created from the same recurring add
+  color?: string; // pastel pill color for calendar display
 };
+
+export function dateKey(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
 
 export const SECTION_ORDER: TaskSection[] = ['morning', 'afternoon', 'evening'];
 

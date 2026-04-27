@@ -12,13 +12,16 @@ import { useColorScheme } from '@/src/hooks/use-color-scheme';
 import { getProfile } from '@/src/backend/profiles';
 import { useSession } from '@/src/backend/session';
 
+import { AIPlanModal, type PlannedTask } from '../components/ai-plan-modal';
 import { TaskFormModal } from '../components/task-form-modal';
 import { TaskRow } from '../components/task-row';
 import { WeeklyCalendar } from '../components/weekly-calendar';
+import { useTasks } from '../context/tasks-context';
 import { rescheduleSection } from '../smart-drop';
 import {
   SECTION_LABELS,
   SECTION_ORDER,
+  dateKey,
   deriveSection,
   formatTimeRange,
   type RepeatRule,
@@ -30,14 +33,6 @@ type ListItem =
   | { type: 'header'; section: TaskSection; key: string }
   | { type: 'task'; task: Task; key: string }
   | { type: 'placeholder'; section: TaskSection; key: string };
-
-const SEED_TASKS: Task[] = [
-  { id: '1', title: 'Read the design doc', timeMinutes: 7 * 60 + 30, durationMinutes: 30, done: false, repeat: 'none' },
-  { id: '2', title: 'Email professor about Friday', timeMinutes: 9 * 60, durationMinutes: 15, done: true, repeat: 'none' },
-  { id: '3', title: 'Lunch with Alex', timeMinutes: 13 * 60, durationMinutes: 60, done: false, repeat: 'none' },
-  { id: '4', title: 'Gym — leg day', timeMinutes: 16 * 60 + 30, durationMinutes: 90, done: false, repeat: 'weekdays' },
-  { id: '5', title: 'Cook dinner', timeMinutes: 19 * 60, durationMinutes: 45, done: false, repeat: 'daily' },
-];
 
 const WEEKDAYS = [
   'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday',
@@ -51,12 +46,26 @@ export function TodoScreen() {
   const scheme = useColorScheme() ?? 'light';
   const palette = Colors[scheme];
   const { session } = useSession();
+  const {
+    tasks: allTasks,
+    addTaskInstance,
+    toggleTask,
+    deleteTask,
+    editTask,
+    replaceTasksForDate,
+  } = useTasks();
   const [name, setName] = useState<string>('there');
-  const [tasks, setTasks] = useState<Task[]>(SEED_TASKS);
   const [editing, setEditing] = useState(false);
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   const [modalOpen, setModalOpen] = useState(false);
   const [editTaskId, setEditTaskId] = useState<string | null>(null);
+  const [aiOpen, setAiOpen] = useState(false);
+
+  const selectedKey = useMemo(() => dateKey(selectedDate), [selectedDate]);
+  const tasks = useMemo(
+    () => allTasks.filter((t) => t.date === selectedKey),
+    [allTasks, selectedKey],
+  );
 
   useEffect(() => {
     if (!session) return;
@@ -81,14 +90,6 @@ export function TodoScreen() {
     return out;
   }, [tasks]);
 
-  function toggleTask(id: string) {
-    setTasks((cur) => cur.map((t) => (t.id === id ? { ...t, done: !t.done } : t)));
-  }
-
-  function deleteTask(id: string) {
-    setTasks((cur) => cur.filter((t) => t.id !== id));
-  }
-
   function openAdd() {
     setEditTaskId(null);
     setModalOpen(true);
@@ -104,6 +105,31 @@ export function TodoScreen() {
     setEditTaskId(null);
   }
 
+  function shiftWeek(direction: 1 | -1) {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // Monday-anchored week, matching WeeklyCalendar's startOfWeek.
+    const weekStart = new Date(selectedDate);
+    const dow = weekStart.getDay();
+    weekStart.setDate(weekStart.getDate() + (dow === 0 ? -6 : 1 - dow));
+    weekStart.setHours(0, 0, 0, 0);
+
+    const targetStart = new Date(weekStart);
+    targetStart.setDate(weekStart.getDate() + 7 * direction);
+    const targetEnd = new Date(targetStart);
+    targetEnd.setDate(targetStart.getDate() + 6);
+
+    if (today >= targetStart && today <= targetEnd) {
+      setSelectedDate(today);
+      return;
+    }
+
+    const next = new Date(targetStart);
+    if (direction === -1) next.setDate(targetStart.getDate() + 6); // Sunday of prev week
+    setSelectedDate(next);
+  }
+
   function saveTask(draft: {
     title: string;
     timeMinutes: number;
@@ -111,19 +137,29 @@ export function TodoScreen() {
     repeat: RepeatRule;
   }) {
     if (editTaskId) {
-      setTasks((cur) =>
-        cur.map((t) => (t.id === editTaskId ? { ...t, ...draft } : t)),
-      );
+      editTask(editTaskId, draft);
     } else {
-      const newTask: Task = {
-        id: String(Date.now()),
+      addTaskInstance({
         title: draft.title,
+        date: selectedKey,
         timeMinutes: draft.timeMinutes,
         durationMinutes: draft.durationMinutes,
         done: false,
         repeat: draft.repeat,
-      };
-      setTasks((cur) => [...cur, newTask]);
+      });
+    }
+  }
+
+  function applyAIPlan(planned: PlannedTask[]) {
+    for (const t of planned) {
+      addTaskInstance({
+        title: t.title,
+        date: selectedKey,
+        timeMinutes: t.timeMinutes,
+        durationMinutes: t.durationMinutes,
+        done: false,
+        repeat: 'none',
+      });
     }
   }
 
@@ -199,7 +235,7 @@ export function TodoScreen() {
 
     const next: Task[] = [];
     for (const sec of SECTION_ORDER) next.push(...groupedNew[sec]);
-    setTasks(next);
+    replaceTasksForDate(selectedKey, next);
   }
 
   const renderItem = ({ item, drag, isActive }: RenderItemArgs<ListItem>) => {
@@ -265,6 +301,12 @@ export function TodoScreen() {
               active={editing}
             />
             <ActionButton
+              icon="mic.fill"
+              label="Plan my day with AI"
+              onPress={() => setAiOpen(true)}
+              palette={palette}
+            />
+            <ActionButton
               icon="plus"
               label="Add task"
               onPress={openAdd}
@@ -279,10 +321,30 @@ export function TodoScreen() {
       </View>
 
       <View style={styles.weekWrap}>
-        <WeeklyCalendar
-          selectedDate={selectedDate}
-          onSelectDate={setSelectedDate}
-        />
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Previous week"
+          onPress={() => shiftWeek(-1)}
+          hitSlop={12}
+          style={({ pressed }) => [styles.weekChevron, pressed && { opacity: 0.5 }]}
+        >
+          <IconSymbol name="chevron.left" size={20} color={palette.textMuted} />
+        </Pressable>
+        <View style={styles.weekCalendarWrap}>
+          <WeeklyCalendar
+            selectedDate={selectedDate}
+            onSelectDate={setSelectedDate}
+          />
+        </View>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Next week"
+          onPress={() => shiftWeek(1)}
+          hitSlop={12}
+          style={({ pressed }) => [styles.weekChevron, pressed && { opacity: 0.5 }]}
+        >
+          <IconSymbol name="chevron.right" size={20} color={palette.textMuted} />
+        </Pressable>
       </View>
     </>
   );
@@ -308,6 +370,13 @@ export function TodoScreen() {
         onClose={closeModal}
         onSave={saveTask}
       />
+
+      <AIPlanModal
+        visible={aiOpen}
+        date={selectedKey}
+        onClose={() => setAiOpen(false)}
+        onPlan={applyAIPlan}
+      />
     </ThemedView>
   );
 }
@@ -319,7 +388,7 @@ function ActionButton({
   palette,
   active,
 }: {
-  icon: 'pencil' | 'plus';
+  icon: 'pencil' | 'plus' | 'mic.fill';
   label: string;
   onPress: () => void;
   palette: typeof Colors.light;
@@ -379,9 +448,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   weekWrap: {
-    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
     paddingTop: 8,
     paddingBottom: 8,
+  },
+  weekCalendarWrap: {
+    flex: 1,
+  },
+  weekChevron: {
+    paddingHorizontal: 12,
+    paddingVertical: 16,
   },
   section: {
     paddingTop: 16,

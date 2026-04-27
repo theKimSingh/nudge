@@ -37,6 +37,10 @@ const MAPPING = {
   'xmark': 'close',
   'clock': 'access-time',
   'arrow.clockwise': 'repeat',
+  'square.and.arrow.down': 'file-download',
+  'mic.fill': 'mic',
+  'sparkles': 'auto-awesome',
+  'person.fill': 'person',
 } as IconMapping;
 
 /**

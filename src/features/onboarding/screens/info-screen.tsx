@@ -78,12 +78,10 @@ export function InfoScreen() {
               <PageIndicator current={2} total={2} />
             </FadeSlideIn>
           </View>
-          <FadeSlideIn delay={0.45} fromBottom>
-            <PageTurnButton
-              label="Next"
-              onPress={() => router.push('/(onboarding)/auth')}
-            />
-          </FadeSlideIn>
+          <PageTurnButton
+            label="Next"
+            onPress={() => router.push('/(onboarding)/auth')}
+          />
         </View>
       </SafeAreaView>
     </ThemedView>

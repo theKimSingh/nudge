@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { signOut } from '@/src/backend/session';
 import { ThemedText } from '@/src/components/themed-text';
 import { ThemedView } from '@/src/components/themed-view';
 import { Colors } from '@/src/constants/theme';
@@ -50,6 +51,12 @@ export function ProfileSetupScreen() {
     router.push('/(onboarding)/goals');
   }
 
+  async function handleBack() {
+    Keyboard.dismiss();
+    await signOut();
+    router.replace('/(onboarding)/auth');
+  }
+
   return (
     <ThemedView style={styles.root}>
       <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
@@ -59,7 +66,7 @@ export function ProfileSetupScreen() {
         >
           <View style={styles.topRow}>
             <FadeSlideIn delay={0}>
-              <BackButton />
+              <BackButton onPress={handleBack} />
             </FadeSlideIn>
           </View>
 
@@ -80,7 +87,12 @@ export function ProfileSetupScreen() {
                 onSubmitEditing={canContinue ? handleNext : undefined}
                 autoCapitalize="words"
                 autoCorrect={false}
-                textContentType="name"
+                autoComplete="off"
+                textContentType="none"
+                keyboardType="ascii-capable"
+                secureTextEntry={false}
+                spellCheck={false}
+                passwordRules=""
                 returnKeyType="done"
                 accessibilityLabel="Your name"
                 style={[styles.input, { color: palette.text }]}

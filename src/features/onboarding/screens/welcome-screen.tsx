@@ -50,12 +50,10 @@ export function WelcomeScreen() {
               <PageIndicator current={1} total={2} />
             </FadeSlideIn>
           </View>
-          <FadeSlideIn delay={0.4} fromBottom>
-            <PageTurnButton
-              label="Next"
-              onPress={() => router.push('/(onboarding)/info')}
-            />
-          </FadeSlideIn>
+          <PageTurnButton
+            label="Next"
+            onPress={() => router.push('/(onboarding)/info')}
+          />
         </View>
       </SafeAreaView>
     </ThemedView>

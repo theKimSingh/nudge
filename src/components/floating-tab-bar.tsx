@@ -9,12 +9,13 @@ import { useColorScheme } from '@/src/hooks/use-color-scheme';
 
 type TabMeta = {
   label: string;
-  icon: 'list.bullet' | 'calendar';
+  icon: 'list.bullet' | 'calendar' | 'person.fill';
 };
 
 const TAB_META: Record<string, TabMeta> = {
   todo: { label: 'ToDo', icon: 'list.bullet' },
   calendar: { label: 'Calendar', icon: 'calendar' },
+  profile: { label: 'Profile', icon: 'person.fill' },
 };
 
 export function FloatingTabBar({ state, navigation }: BottomTabBarProps) {
