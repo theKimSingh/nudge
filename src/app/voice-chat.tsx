@@ -19,6 +19,7 @@ import { useColorScheme } from '@/src/hooks/use-color-scheme';
 import { ThemedView } from '@/src/components/themed-view';
 import { ThemedText } from '@/src/components/themed-text';
 import { LinearGradient } from 'expo-linear-gradient';
+import { transcribeAudio } from '@/src/services/wsprtiny-service';
 import { Audio } from 'expo-av';
 
 const { width, height } = Dimensions.get('window');
@@ -94,26 +95,34 @@ export default function VoiceChatScreen() {
         recordingRef.current = null;
         setIsRecording(false);
 
-        // For now, just show a message that voice was recorded
-        // In a real app, you'd send this to a speech-to-text service
-        setChatHistory(prev => [...prev, {
-          type: 'user',
-          text: '🎙️ Voice message recorded! (Speech-to-text processing would happen here)'
-        }]);
+        if (!uri) return;
 
-        // Simulate processing and adding to calendar
+        setChatHistory(prev => [
+          ...prev,
+          { type: 'user', text: '🎙️ Processing audio...' },
+        ]);
+
+        const transcript = await transcribeAudio(uri);
+
+        setChatHistory(prev => [
+          ...prev,
+          { type: 'user', text: transcript },
+        ]);
+
+        // OPTIONAL: send transcript to your calendar logic
         setTimeout(() => {
-          setChatHistory(prev => [...prev, {
-            type: 'system',
-            text: '✅ Added "Meeting with team at 2 PM" to your calendar for today!'
-          }]);
-        }, 1500);
-
-        scrollViewRef.current?.scrollToEnd({ animated: true });
+          setChatHistory(prev => [
+            ...prev,
+            {
+              type: 'system',
+              text: `✅ Added: "${transcript}" to your schedule`,
+            },
+          ]);
+        }, 800);
       }
     } catch (error) {
-      console.error('Failed to stop recording:', error);
-      setIsRecording(false);
+      console.error(error);
+      Alert.alert('Error', 'Could not transcribe audio');
     }
   };
 
