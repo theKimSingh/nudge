@@ -96,7 +96,7 @@ export function CalendarScreen() {
   }, [importedDates, tasks]);
 
   const handleImport = async () => {
-    if (!url) {
+    if (!url.trim()) {
       Alert.alert('Error', 'Please enter a valid ICS URL');
       return;
     }
@@ -108,8 +108,9 @@ export function CalendarScreen() {
       Alert.alert('Success', 'Calendar events imported successfully!');
       setUrl('');
       setIsImportVisible(false);
-    } catch {
-      Alert.alert('Error', 'Failed to import calendar events.');
+    } catch (error: any) {
+      console.error('Import error:', error);
+      Alert.alert('Error', error.message || 'Failed to import calendar events.');
     } finally {
       setLoading(false);
     }
