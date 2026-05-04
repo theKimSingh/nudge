@@ -28,6 +28,7 @@ import {
 } from '@/src/features/calendar/utils/calendar-parser';
 import { useTasks } from '@/src/features/todo/context/tasks-context';
 import type { RepeatRule } from '@/src/features/todo/types';
+import { importICSAsTasks } from '../utils/import-ics';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 const CALENDAR_WIDTH = SCREEN_WIDTH - 32; // matches container paddingHorizontal: 16
@@ -104,7 +105,7 @@ export function CalendarScreen() {
     setLoading(true);
     try {
       const parsedDates = await fetchAndParseICS(url);
-      setImportedDates(parsedDates);
+      importICSAsTasks(parsedDates, addTaskSeries);
       Alert.alert('Success', 'Calendar events imported successfully!');
       setUrl('');
       setIsImportVisible(false);

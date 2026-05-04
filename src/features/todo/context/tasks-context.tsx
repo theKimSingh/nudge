@@ -4,7 +4,7 @@ import { dateKey, type Task } from '../types';
 
 type TaskTemplate = Omit<Task, 'id' | 'date' | 'seriesId'>;
 
-type TasksContextValue = {
+export type TasksContextValue = {
   tasks: Task[];
   addTaskInstance: (task: Omit<Task, 'id'>) => void;
   addTaskSeries: (template: TaskTemplate, dates: string[]) => void;
