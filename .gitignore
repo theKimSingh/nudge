@@ -48,3 +48,4 @@ Nudge.xcworkspace/
 backend/__pycache__
 backend/venv
 backend/.env
+.vercel
