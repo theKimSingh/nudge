@@ -224,6 +224,32 @@ export function AIPlanModal({ visible, date, onClose, onPlan }: Props) {
             accessibilityLabel="Plan description"
           />
 
+          <View style={styles.voiceInputRow}>
+            <Pressable
+              onPress={() => {
+                // Voice recording logic would go here
+                Alert.alert('Voice Input', 'Voice recording is coming soon!');
+              }}
+              style={({ pressed }) => [
+                styles.voiceInputButton,
+                { backgroundColor: palette.bgSecondary },
+                pressed && { opacity: 0.7 },
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="Voice input"
+            >
+              <IconSymbol name="mic.fill" size={20} color={palette.accent} />
+            </Pressable>
+            <ThemedText
+              type="sen-caption"
+              style={styles.voiceInputText}
+              lightColor={Colors.light.textMuted}
+              darkColor={Colors.dark.textMuted}
+            >
+              Tap to speak your plan
+            </ThemedText>
+          </View>
+
           <Pressable
             onPress={handlePlan}
             disabled={loading || text.trim().length === 0}
@@ -327,5 +353,21 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+  },
+  voiceInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 4,
+  },
+  voiceInputButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  voiceInputText: {
+    fontSize: 14,
   },
 });

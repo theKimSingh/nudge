@@ -57,9 +57,6 @@ export default function TabsLayout() {
           }}
         />
       </Tab.Navigator>
-      <SafeAreaView edges={['bottom']} style={styles.voiceButtonContainer} pointerEvents="box-none">
-        <VoiceButton />
-      </SafeAreaView>
     </View>
   );
 }
