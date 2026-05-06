@@ -3,14 +3,19 @@ export type RepeatRule = 'none' | 'daily' | 'weekdays' | 'weekly';
 
 export type Task = {
   id: string;
+  user_id: string;
   title: string;
-  date: string; // YYYY-MM-DD — the calendar day this instance belongs to
-  timeMinutes: number;
-  durationMinutes: number;
+  description?: string | null;
+  date: string; // YYYY-MM-DD
+  time_minutes: number;
+  duration_minutes: number;
   done: boolean;
-  repeat: RepeatRule;
-  seriesId?: string; // shared across instances created from the same recurring add
-  color?: string; // pastel pill color for calendar display
+  repeat_rule: RepeatRule;
+  series_id?: string | null;
+  color?: string | null;
+  source: 'todo_list' | 'calendar_import';
+  created_at: string;
+  updated_at: string;
 };
 
 export function dateKey(date: Date): string {

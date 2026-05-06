@@ -12,20 +12,27 @@ if (!url || !anonKey) {
   );
 }
 
-// SecureStore is iOS/Android only. On web (and during Expo Router's Node SSR
-// pass at `expo start`), fall back to an in-memory adapter so import-time
-// session recovery doesn't crash.
+// SecureStore is iOS/Android only. In the browser, use localStorage so a page
+// refresh keeps the Supabase session. During Expo Router's Node SSR pass,
+// localStorage is unavailable, so fall back to memory.
 const memoryStore = new Map<string, string>();
+const browserStorage =
+  typeof globalThis !== "undefined" && "localStorage" in globalThis
+    ? globalThis.localStorage
+    : null;
 
 const storage =
   Platform.OS === "web"
     ? {
-      getItem: async (key: string) => memoryStore.get(key) ?? null,
+      getItem: async (key: string) =>
+        browserStorage?.getItem(key) ?? memoryStore.get(key) ?? null,
       setItem: async (key: string, value: string) => {
-        memoryStore.set(key, value);
+        if (browserStorage) browserStorage.setItem(key, value);
+        else memoryStore.set(key, value);
       },
       removeItem: async (key: string) => {
-        memoryStore.delete(key);
+        if (browserStorage) browserStorage.removeItem(key);
+        else memoryStore.delete(key);
       },
     }
     : {

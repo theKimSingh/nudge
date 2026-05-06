@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Pressable, StyleSheet, View } from 'react-native';
+import { Alert, Platform, Pressable, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { SortableList, type RenderItemArgs } from '../components/sortable-list';
@@ -86,7 +86,7 @@ export function TodoScreen() {
       afternoon: [],
       evening: [],
     };
-    for (const t of tasks) out[deriveSection(t.timeMinutes)].push(t);
+    for (const t of tasks) out[deriveSection(t.time_minutes)].push(t);
     return out;
   }, [tasks]);
 
@@ -132,9 +132,9 @@ export function TodoScreen() {
 
   function saveTask(draft: {
     title: string;
-    timeMinutes: number;
-    durationMinutes: number;
-    repeat: RepeatRule;
+    time_minutes: number;
+    duration_minutes: number;
+    repeat_rule: RepeatRule;
   }) {
     if (editTaskId) {
       editTask(editTaskId, draft);
@@ -142,11 +142,65 @@ export function TodoScreen() {
       addTaskInstance({
         title: draft.title,
         date: selectedKey,
-        timeMinutes: draft.timeMinutes,
-        durationMinutes: draft.durationMinutes,
+        time_minutes: draft.time_minutes,
+        duration_minutes: draft.duration_minutes,
         done: false,
-        repeat: draft.repeat,
-      });
+        repeat_rule: draft.repeat_rule,
+        source: 'todo_list',
+      } as any);
+    }
+  }
+
+  async function deleteTaskPermanently(task: Task) {
+    try {
+      await deleteTask(task.id);
+    } catch (err) {
+      Alert.alert(
+        'Could not delete task',
+        err instanceof Error ? err.message : 'Please try again.',
+      );
+    }
+  }
+
+  function confirmDeleteTask(task: Task) {
+    if (Platform.OS === 'web') {
+      const confirmed =
+        typeof globalThis.confirm === 'function'
+          ? globalThis.confirm(
+            `Delete "${task.title}" permanently? This will remove it from your database.`,
+          )
+          : true;
+
+      if (confirmed) {
+        void deleteTaskPermanently(task);
+      }
+      return;
+    }
+
+    Alert.alert(
+      'Delete task permanently?',
+      `"${task.title}" will be removed from your database.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            void deleteTaskPermanently(task);
+          },
+        },
+      ],
+    );
+  }
+
+  async function handleToggleTask(id: string) {
+    try {
+      await toggleTask(id);
+    } catch (err) {
+      Alert.alert(
+        'Could not update task',
+        err instanceof Error ? err.message : 'Please try again.',
+      );
     }
   }
 
@@ -155,11 +209,12 @@ export function TodoScreen() {
       addTaskInstance({
         title: t.title,
         date: selectedKey,
-        timeMinutes: t.timeMinutes,
-        durationMinutes: t.durationMinutes,
+        time_minutes: t.time_minutes,
+        duration_minutes: t.duration_minutes,
         done: false,
-        repeat: 'none',
-      });
+        repeat_rule: 'none',
+        source: 'todo_list',
+      } as any);
     }
   }
 
@@ -268,12 +323,14 @@ export function TodoScreen() {
     return (
       <TaskRow
         title={item.task.title}
-        time={formatTimeRange(item.task.timeMinutes, item.task.durationMinutes)}
+        time={formatTimeRange(item.task.time_minutes, item.task.duration_minutes)}
         done={item.task.done}
         editing={editing}
         isDragging={isActive}
-        onToggle={() => toggleTask(item.task.id)}
-        onDelete={() => deleteTask(item.task.id)}
+        onToggle={() => {
+          void handleToggleTask(item.task.id);
+        }}
+        onDelete={() => confirmDeleteTask(item.task)}
         onEdit={() => openEdit(item.task.id)}
         onDragStart={drag}
       />

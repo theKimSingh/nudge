@@ -22,8 +22,8 @@ import { useColorScheme } from '@/src/hooks/use-color-scheme';
 
 export type PlannedTask = {
   title: string;
-  timeMinutes: number;
-  durationMinutes: number;
+  time_minutes: number;
+  duration_minutes: number;
 };
 
 type Props = {
@@ -125,10 +125,10 @@ export function AIPlanModal({ visible, date, onClose, onPlan }: Props) {
           const startStr = String(t.start_time ?? '');
           const dt = new Date(startStr);
           if (Number.isNaN(dt.getTime())) return null;
-          const timeMinutes = dt.getHours() * 60 + dt.getMinutes();
-          const durationMinutes = Math.max(5, Math.round(Number(t.duration_minutes) || 30));
+          const time_minutes = dt.getHours() * 60 + dt.getMinutes();
+          const duration_minutes = Math.max(5, Math.round(Number(t.duration_minutes) || 30));
           const title = String(t.title || 'Task').trim() || 'Task';
-          return { title, timeMinutes, durationMinutes };
+          return { title, time_minutes, duration_minutes };
         })
         .filter((t): t is PlannedTask => t !== null);
 
