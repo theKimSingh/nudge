@@ -202,7 +202,7 @@ export function DayDetailSheet({ visible, dateKey, onClose }: Props) {
       duration_minutes: draft.duration_minutes,
       done: false,
       repeat_rule: draft.repeat_rule,
-      source: 'todo_list',
+      source: 'todo_list' as const,
     };
 
     if (editTaskId) {

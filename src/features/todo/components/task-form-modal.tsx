@@ -140,6 +140,7 @@ export function TaskFormModal({ visible, initialTask, onClose, onSave }: Props) 
 
   function handleSave() {
     if (!canSave) return;
+
     onSave({ ...draft, title: draft.title.trim() });
     onClose();
   }
