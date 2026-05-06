@@ -218,11 +218,30 @@ export function TasksProvider({ children }: { children: ReactNode }) {
       toggleTask: async (id) => {
         const userId = await requireSession();
 
-        const task = tasks.find((t) => t.id === id);
-        if (!task) return;
+        let previousTask: Task | undefined;
+        let nextDone: boolean | undefined;
 
-        const updated = await toggleTaskService(userId, id, !task.done);
-        setTasks((cur) => mergeTask(cur, updated));
+        setTasks((cur) =>
+          cur.map((task) => {
+            if (task.id !== id) return task;
+
+            previousTask = task;
+            nextDone = !task.done;
+            return { ...task, done: nextDone };
+          })
+        );
+
+        if (!previousTask || nextDone === undefined) return;
+
+        const rollbackTask = previousTask;
+
+        try {
+          const updated = await toggleTaskService(userId, id, nextDone);
+          setTasks((cur) => mergeTask(cur, updated));
+        } catch (err) {
+          setTasks((cur) => mergeTask(cur, rollbackTask));
+          throw err;
+        }
       },
 
       deleteTask: async (id) => {

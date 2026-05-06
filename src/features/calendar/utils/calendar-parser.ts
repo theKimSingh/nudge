@@ -3,6 +3,7 @@ import ICAL from 'ical.js';
 export interface CalendarEvent {
   title: string;
   color: string;
+  done?: boolean;
 }
 
 export interface MarkedDates {

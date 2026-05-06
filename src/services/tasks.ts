@@ -101,12 +101,17 @@ export async function toggleTask(
  * Delete task
  */
 export async function deleteTask(userId: string, id: string): Promise<void> {
-  await supabase
+  const { data } = await supabase
     .from('tasks')
     .delete()
     .eq('id', id)
     .eq('user_id', userId)
+    .select('id')
     .throwOnError();
+
+  if (!data?.length) {
+    throw new Error('Task was not deleted. It may not belong to the current user.');
+  }
 }
 
 /**

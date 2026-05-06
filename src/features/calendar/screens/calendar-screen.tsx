@@ -91,6 +91,7 @@ export function CalendarScreen() {
       out[t.date].events.push({
         title: t.title,
         color: t.color ?? PASTEL_COLORS[t.title.length % PASTEL_COLORS.length],
+        done: t.done,
       });
     }
     return out;
@@ -308,8 +309,18 @@ export function CalendarScreen() {
 
           <View style={styles.eventsContainer}>
             {visibleEvents.map((event, index) => (
-              <View key={index} style={[styles.eventPill, { backgroundColor: event.color }]}>
-                <Text style={styles.eventText} numberOfLines={1}>
+              <View
+                key={index}
+                style={[
+                  styles.eventPill,
+                  { backgroundColor: event.color },
+                  event.done && styles.eventPillDone,
+                ]}
+              >
+                <Text
+                  style={[styles.eventText, event.done && styles.eventTextDone]}
+                  numberOfLines={1}
+                >
                   {event.title}
                 </Text>
               </View>
@@ -810,10 +821,17 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     width: '100%',
   },
+  eventPillDone: {
+    opacity: 0.55,
+  },
   eventText: {
     fontSize: 9,
     fontWeight: '500',
     color: '#000',
+  },
+  eventTextDone: {
+    textDecorationLine: 'line-through',
+    color: '#555',
   },
   moreText: {
     fontSize: 9,
