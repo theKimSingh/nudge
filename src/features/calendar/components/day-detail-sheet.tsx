@@ -153,7 +153,7 @@ export function DayDetailSheet({ visible, dateKey, onClose }: Props) {
       afternoon: [],
       evening: [],
     };
-    for (const t of tasks) out[deriveSection(t.timeMinutes)].push(t);
+    for (const t of tasks) out[deriveSection(t.time_minutes)].push(t);
     return out;
   }, [tasks]);
 
@@ -189,22 +189,26 @@ export function DayDetailSheet({ visible, dateKey, onClose }: Props) {
 
   function saveTask(draft: {
     title: string;
-    timeMinutes: number;
-    durationMinutes: number;
-    repeat: RepeatRule;
+    time_minutes: number;
+    duration_minutes: number;
+    repeat_rule: RepeatRule;
   }) {
     if (!dateKey) return;
+
+    const payload = {
+      title: draft.title,
+      date: dateKey,
+      time_minutes: draft.time_minutes,
+      duration_minutes: draft.duration_minutes,
+      done: false,
+      repeat_rule: draft.repeat_rule,
+      source: 'todo_list',
+    };
+
     if (editTaskId) {
-      editTask(editTaskId, draft);
+      editTask(editTaskId, payload);
     } else {
-      addTaskInstance({
-        title: draft.title,
-        date: dateKey,
-        timeMinutes: draft.timeMinutes,
-        durationMinutes: draft.durationMinutes,
-        done: false,
-        repeat: draft.repeat,
-      });
+      addTaskInstance(payload);
     }
   }
 
@@ -298,7 +302,7 @@ export function DayDetailSheet({ visible, dateKey, onClose }: Props) {
     return (
       <TaskRow
         title={item.task.title}
-        time={formatTimeRange(item.task.timeMinutes, item.task.durationMinutes)}
+        time={formatTimeRange(item.task.time_minutes, item.task.duration_minutes)}
         done={item.task.done}
         editing={editing}
         isDragging={isActive}

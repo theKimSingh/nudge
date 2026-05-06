@@ -190,7 +190,7 @@ export function CalendarScreen() {
 
     const startMinutes = startTime.getHours() * 60 + startTime.getMinutes();
     const endMinutes = endTime.getHours() * 60 + endTime.getMinutes();
-    const durationMinutes = Math.max(5, endMinutes - startMinutes);
+    const duration_minutes = Math.max(5, endMinutes - startMinutes);
 
     const [y, m, d] = currentDate.split('-').map(Number);
     const curr = new Date(y, m - 1, d);
@@ -210,17 +210,18 @@ export function CalendarScreen() {
       else break;
     }
 
-    const repeatRule: RepeatRule =
+    const repeat_rule: RepeatRule =
       repeatFrequency === 'monthly' ? 'none' : (repeatFrequency as RepeatRule);
 
     addTaskSeries(
       {
         title: newEventTitle.trim(),
-        timeMinutes: startMinutes,
-        durationMinutes,
+        time_minutes: startMinutes,
+        duration_minutes,
         done: false,
-        repeat: repeatRule,
+        repeat_rule,
         color: randomColor,
+        source: 'todo_list',
       },
       dates,
     );

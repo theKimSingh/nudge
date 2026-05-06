@@ -86,7 +86,7 @@ export function TodoScreen() {
       afternoon: [],
       evening: [],
     };
-    for (const t of tasks) out[deriveSection(t.timeMinutes)].push(t);
+    for (const t of tasks) out[deriveSection(t.time_minutes)].push(t);
     return out;
   }, [tasks]);
 
@@ -132,9 +132,9 @@ export function TodoScreen() {
 
   function saveTask(draft: {
     title: string;
-    timeMinutes: number;
-    durationMinutes: number;
-    repeat: RepeatRule;
+    time_minutes: number;
+    duration_minutes: number;
+    repeat_rule: RepeatRule;
   }) {
     if (editTaskId) {
       editTask(editTaskId, draft);
@@ -142,11 +142,12 @@ export function TodoScreen() {
       addTaskInstance({
         title: draft.title,
         date: selectedKey,
-        timeMinutes: draft.timeMinutes,
-        durationMinutes: draft.durationMinutes,
+        time_minutes: draft.time_minutes,
+        duration_minutes: draft.duration_minutes,
         done: false,
-        repeat: draft.repeat,
-      });
+        repeat_rule: draft.repeat_rule,
+        source: 'todo_list',
+      } as any);
     }
   }
 
@@ -155,11 +156,12 @@ export function TodoScreen() {
       addTaskInstance({
         title: t.title,
         date: selectedKey,
-        timeMinutes: t.timeMinutes,
-        durationMinutes: t.durationMinutes,
+        time_minutes: t.time_minutes,
+        duration_minutes: t.duration_minutes,
         done: false,
-        repeat: 'none',
-      });
+        repeat_rule: 'none',
+        source: 'todo_list',
+      } as any);
     }
   }
 
@@ -268,7 +270,7 @@ export function TodoScreen() {
     return (
       <TaskRow
         title={item.task.title}
-        time={formatTimeRange(item.task.timeMinutes, item.task.durationMinutes)}
+        time={formatTimeRange(item.task.time_minutes, item.task.duration_minutes)}
         done={item.task.done}
         editing={editing}
         isDragging={isActive}

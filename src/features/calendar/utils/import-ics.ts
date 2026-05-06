@@ -9,11 +9,12 @@ export function importICSAsTasks(
     addTaskSeries(
       {
         title: data.events[0].title,
-        timeMinutes: 9 * 60,
-        durationMinutes: 60,
+        time_minutes: 9 * 60,
+        duration_minutes: 60,
         done: false,
-        repeat: 'none',
+        repeat_rule: 'none',
         color: data.events[0].color,
+        source: 'calendar_import',
       },
       [date]
     );

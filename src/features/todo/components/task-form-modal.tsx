@@ -39,9 +39,9 @@ function durationToDate(minutes: number): Date {
 
 type Draft = {
   title: string;
-  timeMinutes: number;
-  durationMinutes: number;
-  repeat: RepeatRule;
+  time_minutes: number;
+  duration_minutes: number;
+  repeat_rule: RepeatRule;
 };
 
 type Props = {
@@ -60,9 +60,9 @@ function defaultDraft(): Draft {
   const now = new Date();
   return {
     title: '',
-    timeMinutes: now.getHours() * 60 + now.getMinutes(),
-    durationMinutes: DEFAULT_DURATION_MINUTES,
-    repeat: 'none',
+    time_minutes: now.getHours() * 60 + now.getMinutes(),
+    duration_minutes: DEFAULT_DURATION_MINUTES,
+    repeat_rule: 'none',
   };
 }
 
@@ -88,9 +88,9 @@ export function TaskFormModal({ visible, initialTask, onClose, onSave }: Props) 
         initialTask
           ? {
             title: initialTask.title,
-            timeMinutes: initialTask.timeMinutes,
-            durationMinutes: initialTask.durationMinutes,
-            repeat: initialTask.repeat,
+            time_minutes: initialTask.time_minutes,
+            duration_minutes: initialTask.duration_minutes,
+            repeat_rule: initialTask.repeat_rule,
           }
           : defaultDraft(),
       );
@@ -226,7 +226,7 @@ export function TaskFormModal({ visible, initialTask, onClose, onSave }: Props) 
               </ThemedText>
               <TimePill
                 icon="clock"
-                label={formatTimeDisplay(draft.timeMinutes)}
+                label={formatTimeDisplay(draft.time_minutes)}
                 active={expandedField === 'time'}
                 onPress={() =>
                   setExpandedField((cur) => (cur === 'time' ? null : 'time'))
@@ -245,7 +245,7 @@ export function TaskFormModal({ visible, initialTask, onClose, onSave }: Props) 
               </ThemedText>
               <TimePill
                 icon="clock"
-                label={formatDurationShort(draft.durationMinutes)}
+                label={formatDurationShort(draft.duration_minutes)}
                 active={expandedField === 'duration'}
                 onPress={() =>
                   setExpandedField((cur) =>
@@ -260,12 +260,12 @@ export function TaskFormModal({ visible, initialTask, onClose, onSave }: Props) 
           {expandedField === 'time' ? (
             <View style={styles.wheelHost}>
               <DateTimePicker
-                value={minutesToDate(draft.timeMinutes)}
+                value={minutesToDate(draft.time_minutes)}
                 mode="time"
                 display="spinner"
                 onChange={(_evt, d) => {
                   if (d) {
-                    setDraft((cur) => ({ ...cur, timeMinutes: dateToMinutes(d) }));
+                    setDraft((cur) => ({ ...cur, time_minutes: dateToMinutes(d) }));
                   }
                 }}
                 themeVariant={scheme}
@@ -280,7 +280,7 @@ export function TaskFormModal({ visible, initialTask, onClose, onSave }: Props) 
             Platform.OS === 'ios' ? (
               <View style={styles.wheelHost}>
                 <DateTimePicker
-                  value={durationToDate(draft.durationMinutes)}
+                  value={durationToDate(draft.duration_minutes)}
                   mode="countdown"
                   display="spinner"
                   minuteInterval={5}
@@ -289,7 +289,7 @@ export function TaskFormModal({ visible, initialTask, onClose, onSave }: Props) 
                       const minutes = d.getHours() * 60 + d.getMinutes();
                       setDraft((cur) => ({
                         ...cur,
-                        durationMinutes: Math.max(5, minutes),
+                        duration_minutes: Math.max(5, minutes),
                       }));
                     }
                   }}
@@ -301,8 +301,8 @@ export function TaskFormModal({ visible, initialTask, onClose, onSave }: Props) 
               </View>
             ) : (
               <DurationChips
-                value={draft.durationMinutes}
-                onChange={(m) => setDraft((d) => ({ ...d, durationMinutes: m }))}
+                value={draft.duration_minutes}
+                onChange={(m) => setDraft((d) => ({ ...d, duration_minutes: m }))}
                 palette={palette}
               />
             )
@@ -312,8 +312,8 @@ export function TaskFormModal({ visible, initialTask, onClose, onSave }: Props) 
             <Segmented
               options={REPEAT_OPTIONS}
               labels={REPEAT_LABELS}
-              value={draft.repeat}
-              onChange={(r) => setDraft((d) => ({ ...d, repeat: r }))}
+              value={draft.repeat_rule}
+              onChange={(r) => setDraft((d) => ({ ...d, repeat_rule: r }))}
               palette={palette}
             />
           </Field>
