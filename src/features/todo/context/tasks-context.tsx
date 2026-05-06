@@ -90,13 +90,16 @@ export function TasksProvider({ children }: { children: ReactNode }) {
 
       addTaskInstance: async (task) => {
         try {
-          const { data } = await supabase.auth.getSession();
-          if (!data.session?.user?.id) throw new Error('Not authenticated');
-
           await createTask({
-            ...task,
-            user_id: data.session.user.id,
-            source: 'todo_list',
+            title: task.title,
+            description: task.description,
+            date: task.date,
+            time_minutes: task.time_minutes,
+            duration_minutes: task.duration_minutes,
+            repeat_rule: task.repeat_rule,
+            done: task.done,
+            color: task.color,
+            source: task.source ?? 'todo_list',
           } as any);
         } catch (e) {
           console.error('addTaskInstance failed:', e);
@@ -106,16 +109,18 @@ export function TasksProvider({ children }: { children: ReactNode }) {
 
       addTaskSeries: async (template, dates) => {
         try {
-          const { data } = await supabase.auth.getSession();
-          if (!data.session?.user?.id) throw new Error('Not authenticated');
-
           const seriesId = uuidv4();
           const newTasks = dates.map((date) => ({
-            ...template,
+            title: template.title,
+            description: template.description,
             date,
-            seriesId,
-            user_id: data.session.user.id,
-            source: 'todo_list',
+            time_minutes: template.time_minutes,
+            duration_minutes: template.duration_minutes,
+            repeat_rule: template.repeat_rule,
+            series_id: seriesId,
+            done: template.done,
+            color: template.color,
+            source: template.source ?? 'todo_list',
           } as any));
 
           await createTaskBatch(newTasks);
@@ -156,18 +161,21 @@ export function TasksProvider({ children }: { children: ReactNode }) {
 
       replaceTasksForDate: async (date, nextDayTasks) => {
         try {
-          const { data } = await supabase.auth.getSession();
-          if (!data.session?.user?.id) throw new Error('Not authenticated');
-
           const existingForDate = tasks.filter((t) => t.date === date);
           for (const task of existingForDate) {
             await deleteTaskService(task.id);
           }
 
           const newTasks = nextDayTasks.map((task) => ({
-            ...task,
-            user_id: data.session.user.id,
-            source: 'todo_list',
+            title: task.title,
+            description: task.description,
+            date: task.date,
+            time_minutes: task.time_minutes,
+            duration_minutes: task.duration_minutes,
+            repeat_rule: task.repeat_rule,
+            done: task.done,
+            color: task.color,
+            source: task.source ?? 'todo_list',
           } as any));
 
           if (newTasks.length > 0) {
