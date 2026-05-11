@@ -39,9 +39,7 @@ app.post('/plan-day', async (req, res) => {
     const result = await model.generateContent({
       contents: [{ role: "user", parts: [{ text: prompt }] }],
       generationConfig: {
-        // 1. Force the model to output ONLY JSON
         responseMimeType: "application/json",
-        // 2. Disable thinking blocks
         thinkingConfig: {
           thinkingLevel: "MINIMAL"
         }
@@ -55,7 +53,6 @@ app.post('/plan-day', async (req, res) => {
       throw new Error('Gemini API returned no content');
     }
 
-    // Since we forced responseMimeType, we can safely parse this
     const extractedData = JSON.parse(content);
     res.json({ tasks: Array.of(extractedData) });
   } catch (error) {
