@@ -121,17 +121,30 @@ export function AIPlanModal({ visible, date, onClose, onPlan }: Props) {
       const rawTasks: any[] = Array.isArray(data?.tasks) ? data.tasks : [];
 
       const planned: PlannedTask[] = rawTasks
-        .map((t) => {
-          const startStr = String(t.start_time ?? '');
+        .map((t): PlannedTask | null => { // <--- Explicitly define the return type here
+          const startStr = String(t.begin ?? '');
           const dt = new Date(startStr);
+          
           if (Number.isNaN(dt.getTime())) return null;
-          const time_minutes = dt.getHours() * 60 + dt.getMinutes();
-          const duration_minutes = Math.max(5, Math.round(Number(t.duration_minutes) || 30));
-          const title = String(t.title || 'Task').trim() || 'Task';
-          return { title, time_minutes, duration_minutes };
+
+          const timeMinutes = dt.getHours() * 60 + dt.getMinutes();
+          
+          let durationMinutes = 30;
+          if (t.end) {
+            const endDt = new Date(t.end);
+            if (!Number.isNaN(endDt.getTime())) {
+              durationMinutes = Math.round((endDt.getTime() - dt.getTime()) / 60000);
+            }
+          }
+
+          // Returning a complete PlannedTask object
+          return {
+            title: String(t.summary || 'Task').trim(),
+            time_minutes: timeMinutes,
+            duration_minutes: Math.max(5, durationMinutes)
+          };
         })
         .filter((t): t is PlannedTask => t !== null);
-
       if (planned.length === 0) {
         throw new Error('AI returned no tasks.');
       }
