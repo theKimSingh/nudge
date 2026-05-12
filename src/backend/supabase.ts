@@ -20,19 +20,37 @@ const browserStorage =
   typeof globalThis !== "undefined" && "localStorage" in globalThis
     ? globalThis.localStorage
     : null;
+const isWeb = Platform.OS === "web";
 
-const storage =
-  Platform.OS === "web"
+// Ensure we are in a browser environment before accessing localStorage
+const getBrowserStorage = () => {
+  if (typeof window !== "undefined" && window.localStorage) {
+    return window.localStorage;
+  }
+  return null;
+};
+
+const storage = isWeb
     ? {
-      getItem: async (key: string) =>
-        browserStorage?.getItem(key) ?? memoryStore.get(key) ?? null,
+      getItem: async (key: string) => {
+        const bStore = getBrowserStorage();
+        return bStore ? bStore.getItem(key) : (memoryStore.get(key) ?? null);
+      },
       setItem: async (key: string, value: string) => {
-        if (browserStorage) browserStorage.setItem(key, value);
-        else memoryStore.set(key, value);
+        const bStore = getBrowserStorage();
+        if (bStore) {
+          bStore.setItem(key, value);
+        } else {
+          memoryStore.set(key, value);
+        }
       },
       removeItem: async (key: string) => {
-        if (browserStorage) browserStorage.removeItem(key);
-        else memoryStore.delete(key);
+        const bStore = getBrowserStorage();
+        if (bStore) {
+          bStore.removeItem(key);
+        } else {
+          memoryStore.delete(key);
+        }
       },
     }
     : {
