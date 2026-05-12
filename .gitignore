@@ -40,3 +40,12 @@ Nudge.xcodeproj/
 
 expo-env.d.ts
 # @end expo-cli
+
+Nudge.xcodeproj/
+Nudge.xcworkspace/
+.swiftpm/
+
+backend/__pycache__
+backend/venv
+backend/.env
+.vercel

@@ -28,6 +28,7 @@ import {
 } from '@/src/features/calendar/utils/calendar-parser';
 import { useTasks } from '@/src/features/todo/context/tasks-context';
 import type { RepeatRule } from '@/src/features/todo/types';
+import { importICSAsTasks } from '../utils/import-ics';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 const CALENDAR_WIDTH = SCREEN_WIDTH - 32; // matches container paddingHorizontal: 16
@@ -90,13 +91,14 @@ export function CalendarScreen() {
       out[t.date].events.push({
         title: t.title,
         color: t.color ?? PASTEL_COLORS[t.title.length % PASTEL_COLORS.length],
+        done: t.done,
       });
     }
     return out;
   }, [importedDates, tasks]);
 
   const handleImport = async () => {
-    if (!url) {
+    if (!url.trim()) {
       Alert.alert('Error', 'Please enter a valid ICS URL');
       return;
     }
@@ -104,12 +106,13 @@ export function CalendarScreen() {
     setLoading(true);
     try {
       const parsedDates = await fetchAndParseICS(url);
-      setImportedDates(parsedDates);
+      importICSAsTasks(parsedDates, addTaskSeries);
       Alert.alert('Success', 'Calendar events imported successfully!');
       setUrl('');
       setIsImportVisible(false);
-    } catch {
-      Alert.alert('Error', 'Failed to import calendar events.');
+    } catch (error: any) {
+      console.error('Import error:', error);
+      Alert.alert('Error', error.message || 'Failed to import calendar events.');
     } finally {
       setLoading(false);
     }
@@ -188,7 +191,7 @@ export function CalendarScreen() {
 
     const startMinutes = startTime.getHours() * 60 + startTime.getMinutes();
     const endMinutes = endTime.getHours() * 60 + endTime.getMinutes();
-    const durationMinutes = Math.max(5, endMinutes - startMinutes);
+    const duration_minutes = Math.max(5, endMinutes - startMinutes);
 
     const [y, m, d] = currentDate.split('-').map(Number);
     const curr = new Date(y, m - 1, d);
@@ -208,17 +211,18 @@ export function CalendarScreen() {
       else break;
     }
 
-    const repeatRule: RepeatRule =
+    const repeat_rule: RepeatRule =
       repeatFrequency === 'monthly' ? 'none' : (repeatFrequency as RepeatRule);
 
     addTaskSeries(
       {
         title: newEventTitle.trim(),
-        timeMinutes: startMinutes,
-        durationMinutes,
+        time_minutes: startMinutes,
+        duration_minutes,
         done: false,
-        repeat: repeatRule,
+        repeat_rule,
         color: randomColor,
+        source: 'todo_list',
       },
       dates,
     );
@@ -305,8 +309,18 @@ export function CalendarScreen() {
 
           <View style={styles.eventsContainer}>
             {visibleEvents.map((event, index) => (
-              <View key={index} style={[styles.eventPill, { backgroundColor: event.color }]}>
-                <Text style={styles.eventText} numberOfLines={1}>
+              <View
+                key={index}
+                style={[
+                  styles.eventPill,
+                  { backgroundColor: event.color },
+                  event.done && styles.eventPillDone,
+                ]}
+              >
+                <Text
+                  style={[styles.eventText, event.done && styles.eventTextDone]}
+                  numberOfLines={1}
+                >
                   {event.title}
                 </Text>
               </View>
@@ -807,10 +821,17 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     width: '100%',
   },
+  eventPillDone: {
+    opacity: 0.55,
+  },
   eventText: {
     fontSize: 9,
     fontWeight: '500',
     color: '#000',
+  },
+  eventTextDone: {
+    textDecorationLine: 'line-through',
+    color: '#555',
   },
   moreText: {
     fontSize: 9,

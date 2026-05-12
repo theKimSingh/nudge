@@ -31,18 +31,18 @@ export function rescheduleSection(
     newStart = SECTION_ANCHOR_MINUTES[section];
   } else {
     const prev = result[droppedIndex - 1];
-    newStart = prev.timeMinutes + prev.durationMinutes + BUFFER_MINUTES;
+    newStart = prev.time_minutes + prev.duration_minutes + BUFFER_MINUTES;
   }
   newStart = Math.min(newStart, MAX_START_MINUTES);
-  result[droppedIndex] = { ...result[droppedIndex], timeMinutes: newStart };
+  result[droppedIndex] = { ...result[droppedIndex], time_minutes: newStart };
 
   for (let i = droppedIndex + 1; i < result.length; i++) {
     const prev = result[i - 1];
-    const earliest = prev.timeMinutes + prev.durationMinutes + BUFFER_MINUTES;
-    if (result[i].timeMinutes < earliest) {
+    const earliest = prev.time_minutes + prev.duration_minutes + BUFFER_MINUTES;
+    if (result[i].time_minutes < earliest) {
       result[i] = {
         ...result[i],
-        timeMinutes: Math.min(earliest, MAX_START_MINUTES),
+        time_minutes: Math.min(earliest, MAX_START_MINUTES),
       };
     }
   }

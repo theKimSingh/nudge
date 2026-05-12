@@ -2,7 +2,7 @@
 
 Voice-first daily planner. React Native + Expo, TypeScript, Supabase.
 
-## Setup (teammates)
+## Get started
 
 ```bash
 nvm use            # or install Node 20
@@ -100,6 +100,17 @@ The "Confirm signup" email template in Supabase **must** use `{{ .Token }}` (the
 | `npm run doctor` | `expo-doctor` sanity check |
 | `npm run lint` | Expo ESLint |
 | `npm run reset-project` | Wipe the starter screens and start from a blank `app/` directory |
+
+## Layout
+
+```
+app/              expo-router screens (tabs, modal)
+components/       reusable UI
+constants/        theme
+hooks/            shared hooks
+assets/           icons, splash
+app.json          Expo config
+```
 
 ## Tech
 

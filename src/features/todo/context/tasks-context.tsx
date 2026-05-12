@@ -1,109 +1,292 @@
-import { createContext, ReactNode, useContext, useMemo, useState } from 'react';
+import { createContext, ReactNode, useContext, useEffect, useMemo, useState } from 'react';
+import type { Session } from '@supabase/supabase-js';
+import { v4 as uuidv4 } from 'uuid';
 
 import { dateKey, type Task } from '../types';
+import {
+  fetchTasksForDateRange,
+  createTask,
+  createTaskBatch,
+  updateTask,
+  toggleTask as toggleTaskService,
+  deleteTask as deleteTaskService,
+} from '@/src/services/tasks';
+import { supabase } from '@/src/backend/supabase';
 
-type TaskTemplate = Omit<Task, 'id' | 'date' | 'seriesId'>;
+type TaskTemplate = Omit<
+  Task,
+  'id' | 'date' | 'series_id' | 'user_id' | 'created_at' | 'updated_at'
+>;
 
-type TasksContextValue = {
+export type TasksContextValue = {
   tasks: Task[];
-  addTaskInstance: (task: Omit<Task, 'id'>) => void;
-  addTaskSeries: (template: TaskTemplate, dates: string[]) => void;
-  toggleTask: (id: string) => void;
-  deleteTask: (id: string) => void;
-  editTask: (id: string, patch: Partial<Omit<Task, 'id'>>) => void;
-  replaceTasksForDate: (date: string, nextDayTasks: Task[]) => void;
+  loading: boolean;
+  addTaskInstance: (
+    task: Omit<TaskTemplate, 'source'> & {
+      date: string;
+      source?: 'todo_list' | 'calendar_import';
+    }
+  ) => Promise<void>;
+  addTaskSeries: (
+    template: Omit<TaskTemplate, 'source'> & {
+      source?: 'todo_list' | 'calendar_import';
+    },
+    dates: string[]
+  ) => Promise<void>;
+  toggleTask: (id: string) => Promise<void>;
+  deleteTask: (id: string) => Promise<void>;
+  editTask: (
+    id: string,
+    patch: Partial<Omit<TaskTemplate, 'source'>>
+  ) => Promise<void>;
+  replaceTasksForDate: (date: string, nextDayTasks: Task[]) => Promise<void>;
 };
 
 const TasksContext = createContext<TasksContextValue | null>(null);
 
 const TODAY = dateKey(new Date());
 
-const SEED_TASKS: Task[] = [
-  {
-    id: 'seed-1',
-    title: 'Read the design doc',
-    date: TODAY,
-    timeMinutes: 7 * 60 + 30,
-    durationMinutes: 30,
-    done: false,
-    repeat: 'none',
-  },
-  {
-    id: 'seed-2',
-    title: 'CSE 480',
-    date: TODAY,
-    timeMinutes: 9 * 60,
-    durationMinutes: 15,
-    done: true,
-    repeat: 'none',
-  },
-  {
-    id: 'seed-3',
-    title: 'Lunch',
-    date: TODAY,
-    timeMinutes: 13 * 60,
-    durationMinutes: 60,
-    done: false,
-    repeat: 'none',
-  },
-  {
-    id: 'seed-4',
-    title: 'Gym — leg day',
-    date: TODAY,
-    timeMinutes: 16 * 60 + 30,
-    durationMinutes: 90,
-    done: false,
-    repeat: 'weekdays',
-  },
-  {
-    id: 'seed-5',
-    title: 'Cook dinner',
-    date: TODAY,
-    timeMinutes: 19 * 60,
-    durationMinutes: 45,
-    done: false,
-    repeat: 'daily',
-  },
-];
+function mergeTask(cur: Task[], task: Task): Task[] {
+  return cur.some((t) => t.id === task.id)
+    ? cur.map((t) => (t.id === task.id ? task : t))
+    : [...cur, task];
+}
 
-let counter = 0;
-function nextId(prefix: string): string {
-  counter += 1;
-  return `${prefix}-${Date.now().toString(36)}-${counter}`;
+function toTaskInsert(task: Task) {
+  return {
+    title: task.title,
+    description: task.description ?? null,
+    date: task.date,
+    time_minutes: task.time_minutes,
+    duration_minutes: task.duration_minutes,
+    repeat_rule: task.repeat_rule,
+    series_id: task.series_id ?? null,
+    done: task.done,
+    color: task.color ?? null,
+    source: task.source,
+  };
 }
 
 export function TasksProvider({ children }: { children: ReactNode }) {
-  const [tasks, setTasks] = useState<Task[]>(SEED_TASKS);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [session, setSession] = useState<Session | null>(null);
+
+  const requireSession = async () => {
+    const userId = session?.user?.id;
+
+    if (userId) {
+      return userId;
+    }
+
+    const { data } = await supabase.auth.getSession();
+    setSession(data.session ?? null);
+
+    const refreshedUserId = data.session?.user?.id;
+    if (!refreshedUserId) {
+      throw new Error('User not logged in');
+    }
+
+    return refreshedUserId;
+  };
+
+  /**
+   * Load initial session + tasks
+   */
+  useEffect(() => {
+    let mounted = true;
+
+    async function init() {
+      try {
+        const { data } = await supabase.auth.getSession();
+        if (!mounted) return;
+
+        const currentSession = data.session ?? null;
+        setSession(currentSession);
+
+        if (!currentSession?.user?.id) {
+          setTasks([]);
+          setLoading(false);
+          return;
+        }
+
+        const endDate = new Date(TODAY);
+        endDate.setDate(endDate.getDate() + 90);
+
+        const fetchedTasks = await fetchTasksForDateRange(
+          currentSession.user.id,
+          TODAY,
+          dateKey(endDate)
+        );
+
+        setTasks(fetchedTasks);
+      } catch (err) {
+        console.error('Failed to load tasks:', err);
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    init();
+
+    const { data: listener } = supabase.auth.onAuthStateChange(
+      async (_event, newSession) => {
+        setSession(newSession);
+
+        if (newSession?.user?.id) {
+          const endDate = new Date(TODAY);
+          endDate.setDate(endDate.getDate() + 90);
+
+          const fetchedTasks = await fetchTasksForDateRange(
+            newSession.user.id,
+            TODAY,
+            dateKey(endDate)
+          );
+
+          setTasks(fetchedTasks);
+        } else {
+          setTasks([]);
+        }
+      }
+    );
+
+    return () => {
+      mounted = false;
+      listener.subscription.unsubscribe();
+    };
+  }, []);
+
+  /**
+   * realtime sync
+   */
+  useEffect(() => {
+    const channel = supabase
+      .channel('tasks-changes')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'tasks' },
+        (payload) => {
+          if (payload.eventType === 'INSERT') {
+            setTasks((cur) => mergeTask(cur, payload.new as Task));
+          } else if (payload.eventType === 'UPDATE') {
+            setTasks((cur) =>
+              cur.map((t) =>
+                t.id === payload.new.id ? (payload.new as Task) : t
+              )
+            );
+          } else if (payload.eventType === 'DELETE') {
+            setTasks((cur) =>
+              cur.filter((t) => t.id !== payload.old.id)
+            );
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
 
   const value = useMemo<TasksContextValue>(
     () => ({
       tasks,
-      addTaskInstance: (task) =>
-        setTasks((cur) => [...cur, { ...task, id: nextId('t') }]),
-      addTaskSeries: (template, dates) =>
-        setTasks((cur) => {
-          if (dates.length === 0) return cur;
-          const seriesId = nextId('s');
-          const additions: Task[] = dates.map((d, i) => ({
-            ...template,
-            id: `${seriesId}-${i}`,
-            seriesId,
-            date: d,
-          }));
-          return [...cur, ...additions];
-        }),
-      toggleTask: (id) =>
-        setTasks((cur) => cur.map((t) => (t.id === id ? { ...t, done: !t.done } : t))),
-      deleteTask: (id) => setTasks((cur) => cur.filter((t) => t.id !== id)),
-      editTask: (id, patch) =>
-        setTasks((cur) => cur.map((t) => (t.id === id ? { ...t, ...patch } : t))),
-      replaceTasksForDate: (date, nextDayTasks) =>
-        setTasks((cur) => [...cur.filter((t) => t.date !== date), ...nextDayTasks]),
+      loading,
+
+      addTaskInstance: async (task) => {
+        const userId = await requireSession();
+
+        const created = await createTask(userId, task);
+        setTasks((cur) => mergeTask(cur, created));
+      },
+
+      addTaskSeries: async (template, dates) => {
+        const userId = await requireSession();
+
+        const seriesId = uuidv4();
+
+        const newTasks = dates.map((date) => ({
+          ...template,
+          date,
+          series_id: seriesId,
+        }));
+
+        const created = await createTaskBatch(userId, newTasks);
+        setTasks((cur) => created.reduce(mergeTask, cur));
+      },
+
+      toggleTask: async (id) => {
+        const userId = await requireSession();
+
+        let previousTask: Task | undefined;
+        let nextDone: boolean | undefined;
+
+        setTasks((cur) =>
+          cur.map((task) => {
+            if (task.id !== id) return task;
+
+            previousTask = task;
+            nextDone = !task.done;
+            return { ...task, done: nextDone };
+          })
+        );
+
+        if (!previousTask || nextDone === undefined) return;
+
+        const rollbackTask = previousTask;
+
+        try {
+          const updated = await toggleTaskService(userId, id, nextDone);
+          setTasks((cur) => mergeTask(cur, updated));
+        } catch (err) {
+          setTasks((cur) => mergeTask(cur, rollbackTask));
+          throw err;
+        }
+      },
+
+      deleteTask: async (id) => {
+        const userId = await requireSession();
+        await deleteTaskService(userId, id);
+        setTasks((cur) => cur.filter((t) => t.id !== id));
+      },
+
+      editTask: async (id, patch) => {
+        const userId = await requireSession();
+        const updated = await updateTask(userId, id, patch as any);
+        setTasks((cur) => mergeTask(cur, updated));
+      },
+
+      replaceTasksForDate: async (date, nextDayTasks) => {
+        const userId = await requireSession();
+
+        const existing = tasks.filter((t) => t.date === date);
+
+        for (const t of existing) {
+          await deleteTaskService(userId, t.id);
+        }
+
+        if (nextDayTasks.length) {
+          const created = await createTaskBatch(
+            userId,
+            nextDayTasks.map(toTaskInsert)
+          );
+          setTasks((cur) => [
+            ...cur.filter((t) => t.date !== date),
+            ...created,
+          ]);
+        } else {
+          setTasks((cur) => cur.filter((t) => t.date !== date));
+        }
+      },
     }),
-    [tasks],
+    [tasks, loading, session]
   );
 
-  return <TasksContext.Provider value={value}>{children}</TasksContext.Provider>;
+  return (
+    <TasksContext.Provider value={value}>
+      {children}
+    </TasksContext.Provider>
+  );
 }
 
 export function useTasks(): TasksContextValue {
