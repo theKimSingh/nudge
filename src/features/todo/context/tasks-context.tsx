@@ -1,8 +1,7 @@
 import { createContext, ReactNode, useContext, useEffect, useMemo, useState } from 'react';
 import type { Session } from '@supabase/supabase-js';
-import { v4 as uuidv4 } from 'uuid';
 
-import { dateKey, type Task } from '../types';
+import { REPEAT_HORIZON_DAYS, dateKey, type Task } from '../types';
 import {
   fetchTasksForDateRange,
   createTask,
@@ -10,8 +9,17 @@ import {
   updateTask,
   toggleTask as toggleTaskService,
   deleteTask as deleteTaskService,
+  deleteTasksBySeriesId,
 } from '../api/tasks';
 import { supabase } from '@/src/backend/supabase';
+
+function uuidv4(): string {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
 
 type TaskTemplate = Omit<
   Task,
@@ -35,6 +43,7 @@ export type TasksContextValue = {
   ) => Promise<void>;
   toggleTask: (id: string) => Promise<void>;
   deleteTask: (id: string) => Promise<void>;
+  deleteTaskSeries: (seriesId: string, fromDate?: string) => Promise<void>;
   editTask: (
     id: string,
     patch: Partial<Omit<TaskTemplate, 'source'>>
@@ -111,7 +120,7 @@ export function TasksProvider({ children }: { children: ReactNode }) {
         }
 
         const endDate = new Date(TODAY);
-        endDate.setDate(endDate.getDate() + 90);
+        endDate.setDate(endDate.getDate() + REPEAT_HORIZON_DAYS);
 
         const fetchedTasks = await fetchTasksForDateRange(
           currentSession.user.id,
@@ -135,7 +144,7 @@ export function TasksProvider({ children }: { children: ReactNode }) {
 
         if (newSession?.user?.id) {
           const endDate = new Date(TODAY);
-          endDate.setDate(endDate.getDate() + 90);
+          endDate.setDate(endDate.getDate() + REPEAT_HORIZON_DAYS);
 
           const fetchedTasks = await fetchTasksForDateRange(
             newSession.user.id,
@@ -248,6 +257,17 @@ export function TasksProvider({ children }: { children: ReactNode }) {
         const userId = await requireSession();
         await deleteTaskService(userId, id);
         setTasks((cur) => cur.filter((t) => t.id !== id));
+      },
+
+      deleteTaskSeries: async (seriesId, fromDate) => {
+        const userId = await requireSession();
+        await deleteTasksBySeriesId(userId, seriesId, fromDate);
+        setTasks((cur) =>
+          cur.filter((t) => {
+            if (t.series_id !== seriesId) return true;
+            return fromDate ? t.date < fromDate : false;
+          }),
+        );
       },
 
       editTask: async (id, patch) => {

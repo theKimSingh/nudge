@@ -115,16 +115,22 @@ export async function deleteTask(userId: string, id: string): Promise<void> {
 }
 
 /**
- * Delete series
+ * Delete series. If `fromDate` is provided, only rows with date >= fromDate are removed.
  */
 export async function deleteTasksBySeriesId(
   userId: string,
-  seriesId: string
+  seriesId: string,
+  fromDate?: string,
 ): Promise<void> {
-  await supabase
+  let query = supabase
     .from('tasks')
     .delete()
     .eq('series_id', seriesId)
-    .eq('user_id', userId)
-    .throwOnError();
+    .eq('user_id', userId);
+
+  if (fromDate) {
+    query = query.gte('date', fromDate);
+  }
+
+  await query.throwOnError();
 }
