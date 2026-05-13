@@ -14,12 +14,9 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { IconSymbol } from '@/src/components/ui/icon-symbol';
-import { Colors } from '@/src/constants/theme';
-import { useColorScheme } from '@/src/hooks/use-color-scheme';
-import { ThemedView } from '@/src/components/themed-view';
 import { ThemedText } from '@/src/components/themed-text';
 import { LinearGradient } from 'expo-linear-gradient';
-import { transcribeAudio } from '@/src/services/wsprtiny-service';
+import { transcribeAudio } from '@/src/services/transcribe';
 import {
   Audio,
   InterruptionModeAndroid,
@@ -30,7 +27,6 @@ const { width, height } = Dimensions.get('window');
 
 export default function VoiceChatScreen() {
   const router = useRouter();
-  const colorScheme = useColorScheme();
   const [message, setMessage] = useState('');
   const [isRecording, setIsRecording] = useState(false);
   const [chatHistory, setChatHistory] = useState<{ type: 'user' | 'system'; text: string }[]>([]);
