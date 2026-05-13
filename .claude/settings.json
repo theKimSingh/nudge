@@ -28,7 +28,8 @@
       "Bash(xargs -r kill)",
       "Bash(grep -vE '^\\(node_modules|\\\\.expo|\\\\.git|package-lock\\\\.json\\)$')",
       "Bash(supabase --version)",
-      "Bash(npx supabase *)"
+      "Bash(npx supabase *)",
+      "Bash(xargs ls -lh)"
     ],
     "additionalDirectories": [
       "/tmp",
