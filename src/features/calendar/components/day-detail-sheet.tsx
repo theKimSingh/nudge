@@ -28,6 +28,7 @@ import {
   SECTION_LABELS,
   SECTION_ORDER,
   deriveSection,
+  expandRepeatDates,
   formatTimeRange,
   type RepeatRule,
   type Task,
@@ -84,8 +85,10 @@ export function DayDetailSheet({ visible, dateKey, onClose }: Props) {
   const {
     tasks: allTasks,
     addTaskInstance,
+    addTaskSeries,
     toggleTask,
     deleteTask,
+    deleteTaskSeries,
     editTask,
     replaceTasksForDate,
   } = useTasks();
@@ -197,9 +200,18 @@ export function DayDetailSheet({ visible, dateKey, onClose }: Props) {
   }) {
     if (!dateKey) return;
 
-    const payload = {
+    if (editTaskId) {
+      editTask(editTaskId, {
+        title: draft.title,
+        time_minutes: draft.time_minutes,
+        duration_minutes: draft.duration_minutes,
+        repeat_rule: draft.repeat_rule,
+      });
+      return;
+    }
+
+    const template = {
       title: draft.title,
-      date: dateKey,
       time_minutes: draft.time_minutes,
       duration_minutes: draft.duration_minutes,
       done: false,
@@ -207,10 +219,11 @@ export function DayDetailSheet({ visible, dateKey, onClose }: Props) {
       source: 'todo_list' as const,
     };
 
-    if (editTaskId) {
-      editTask(editTaskId, payload);
+    if (draft.repeat_rule === 'none') {
+      addTaskInstance({ ...template, date: dateKey });
     } else {
-      addTaskInstance(payload);
+      const dates = expandRepeatDates(dateKey, draft.repeat_rule);
+      addTaskSeries(template, dates);
     }
   }
 
@@ -283,18 +296,62 @@ export function DayDetailSheet({ visible, dateKey, onClose }: Props) {
     }
   }
 
-  function confirmDeleteTask(task: Task) {
-    if (Platform.OS === 'web') {
-      const confirmed =
-        typeof globalThis.confirm === 'function'
-          ? globalThis.confirm(
-            `Delete "${task.title}" permanently? This will remove it from your database.`,
-          )
-          : true;
+  async function deleteSeriesFromDate(task: Task) {
+    if (!task.series_id) return;
+    try {
+      await deleteTaskSeries(task.series_id, task.date);
+    } catch (err) {
+      Alert.alert(
+        'Could not delete series',
+        err instanceof Error ? err.message : 'Please try again.',
+      );
+    }
+  }
 
-      if (confirmed) {
-        void deleteTaskPermanently(task);
+  function confirmDeleteTask(task: Task) {
+    const isSeries = !!task.series_id;
+
+    if (Platform.OS === 'web') {
+      if (isSeries) {
+        const all = globalThis.confirm?.(
+          `"${task.title}" repeats. OK = delete this and all future occurrences. Cancel = delete only this one.`,
+        );
+        if (all) {
+          void deleteSeriesFromDate(task);
+        } else {
+          void deleteTaskPermanently(task);
+        }
+        return;
       }
+
+      const confirmed = globalThis.confirm?.(
+        `Delete "${task.title}" permanently?`,
+      );
+      if (confirmed) void deleteTaskPermanently(task);
+      return;
+    }
+
+    if (isSeries) {
+      Alert.alert(
+        'This is a repeating task',
+        `"${task.title}" repeats. What would you like to delete?`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'This task only',
+            onPress: () => {
+              void deleteTaskPermanently(task);
+            },
+          },
+          {
+            text: 'This and future',
+            style: 'destructive',
+            onPress: () => {
+              void deleteSeriesFromDate(task);
+            },
+          },
+        ],
+      );
       return;
     }
 

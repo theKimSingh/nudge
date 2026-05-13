@@ -23,6 +23,7 @@ import {
   SECTION_ORDER,
   dateKey,
   deriveSection,
+  expandRepeatDates,
   formatTimeRange,
   type RepeatRule,
   type Task,
@@ -49,8 +50,10 @@ export function TodoScreen() {
   const {
     tasks: allTasks,
     addTaskInstance,
+    addTaskSeries,
     toggleTask,
     deleteTask,
+    deleteTaskSeries,
     editTask,
     replaceTasksForDate,
   } = useTasks();
@@ -138,16 +141,23 @@ export function TodoScreen() {
   }) {
     if (editTaskId) {
       editTask(editTaskId, draft);
+      return;
+    }
+
+    const template = {
+      title: draft.title,
+      time_minutes: draft.time_minutes,
+      duration_minutes: draft.duration_minutes,
+      done: false,
+      repeat_rule: draft.repeat_rule,
+      source: 'todo_list' as const,
+    };
+
+    if (draft.repeat_rule === 'none') {
+      addTaskInstance({ ...template, date: selectedKey });
     } else {
-      addTaskInstance({
-        title: draft.title,
-        date: selectedKey,
-        time_minutes: draft.time_minutes,
-        duration_minutes: draft.duration_minutes,
-        done: false,
-        repeat_rule: draft.repeat_rule,
-        source: 'todo_list',
-      } as any);
+      const dates = expandRepeatDates(selectedKey, draft.repeat_rule);
+      addTaskSeries(template, dates);
     }
   }
 
@@ -162,18 +172,62 @@ export function TodoScreen() {
     }
   }
 
-  function confirmDeleteTask(task: Task) {
-    if (Platform.OS === 'web') {
-      const confirmed =
-        typeof globalThis.confirm === 'function'
-          ? globalThis.confirm(
-            `Delete "${task.title}" permanently? This will remove it from your database.`,
-          )
-          : true;
+  async function deleteSeriesFromDate(task: Task) {
+    if (!task.series_id) return;
+    try {
+      await deleteTaskSeries(task.series_id, task.date);
+    } catch (err) {
+      Alert.alert(
+        'Could not delete series',
+        err instanceof Error ? err.message : 'Please try again.',
+      );
+    }
+  }
 
-      if (confirmed) {
-        void deleteTaskPermanently(task);
+  function confirmDeleteTask(task: Task) {
+    const isSeries = !!task.series_id;
+
+    if (Platform.OS === 'web') {
+      if (isSeries) {
+        const all = globalThis.confirm?.(
+          `"${task.title}" repeats. OK = delete this and all future occurrences. Cancel = delete only this one.`,
+        );
+        if (all) {
+          void deleteSeriesFromDate(task);
+        } else {
+          void deleteTaskPermanently(task);
+        }
+        return;
       }
+
+      const confirmed = globalThis.confirm?.(
+        `Delete "${task.title}" permanently?`,
+      );
+      if (confirmed) void deleteTaskPermanently(task);
+      return;
+    }
+
+    if (isSeries) {
+      Alert.alert(
+        'This is a repeating task',
+        `"${task.title}" repeats. What would you like to delete?`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'This task only',
+            onPress: () => {
+              void deleteTaskPermanently(task);
+            },
+          },
+          {
+            text: 'This and future',
+            style: 'destructive',
+            onPress: () => {
+              void deleteSeriesFromDate(task);
+            },
+          },
+        ],
+      );
       return;
     }
 

@@ -42,6 +42,35 @@ export const REPEAT_LABELS: Record<RepeatRule, string> = {
 
 export const DURATION_OPTIONS_MINUTES: number[] = [15, 30, 45, 60, 90, 120, 180];
 
+export const REPEAT_HORIZON_DAYS = 365;
+
+export function expandRepeatDates(
+  startKey: string,
+  rule: RepeatRule,
+  horizonDays: number = REPEAT_HORIZON_DAYS,
+): string[] {
+  if (rule === 'none') return [startKey];
+
+  const [y, m, d] = startKey.split('-').map(Number);
+  const start = new Date(y, m - 1, d);
+
+  const out: string[] = [];
+  for (let i = 0; i < horizonDays; i++) {
+    const cur = new Date(start);
+    cur.setDate(start.getDate() + i);
+
+    if (rule === 'daily') {
+      out.push(dateKey(cur));
+    } else if (rule === 'weekdays') {
+      const dow = cur.getDay();
+      if (dow >= 1 && dow <= 5) out.push(dateKey(cur));
+    } else if (rule === 'weekly') {
+      if (i % 7 === 0) out.push(dateKey(cur));
+    }
+  }
+  return out;
+}
+
 export const BUFFER_MINUTES = 15;
 export const MAX_START_MINUTES = 23 * 60 + 45;
 
