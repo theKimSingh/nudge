@@ -1,9 +1,10 @@
 const express = require('express');
 const fetch = require('node-fetch');
 const cors = require('cors');
-
+require('dotenv').config();
 const app = express();
 const PORT = 8000;
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 // Enable CORS for all routes
 app.use(cors());
@@ -12,6 +13,55 @@ app.use(express.json());
 // Health check
 app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
+});
+
+
+app.post('/plan-day', async (req, res) => {
+  try {
+    const { text, date } = req.body;
+    if (!text || !date) {
+      return res.status(400).json({ error: 'text and date are required' });
+    }
+    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+    const model = genAI.getGenerativeModel({ model: 'gemini-3.1-flash-lite' });
+    console.log("Sending test prompt to Gemini...");
+    // const result = await model.generateContent("Hello, are you working correctly? Return 'Yes' if you are.");
+    // const response = await result.response;
+    // const content = response.text();
+    
+    const today = new Date().toISOString().split('T')[0];
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const prompt = `Today's date is ${today} and the user's timezone is ${timezone}. 
+    Extract event details from the following text: '${text}'.  Keep the end of the event at 1 hour after beginning unless otherwise specified.
+    Return the result in a strict JSON format with the following keys: 
+    'summary', 'begin' (ISO 8601 format), 'end' (ISO 8601 format), 'description', 'location'. 
+    If a field is missing, use null. Only return the JSON.`;
+
+    const result = await model.generateContent({
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      generationConfig: {
+        responseMimeType: "application/json",
+        thinkingConfig: {
+          thinkingLevel: "MINIMAL"
+        }
+      }
+    });
+
+    const response = await result.response;
+    const content = response.text();
+    console.log("Gemini response:", content);
+
+    if (!content || content.trim() === "") {
+      throw new Error('Gemini API returned no content');
+    }
+
+    const extractedData = JSON.parse(content);
+    res.json({ tasks: Array.of(extractedData) });
+    // res.json({"hi": "hello"});
+  } catch (error) {
+    console.error('Plan day error:', error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Proxy endpoint for fetching ICS files
