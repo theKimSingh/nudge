@@ -55,7 +55,8 @@ Commit the migration file with your change so the rest of the team has it.
 src/
   app/                    expo-router screens
     (onboarding)/         welcome → info → auth → profile-setup → goals → notifications
-    (tabs)/               main app tabs (home, supabase debug)
+    (tabs)/               main app tabs (todo, calendar)
+    voice-chat.tsx        voice planning modal route
     _layout.tsx           root layout
     index.tsx             session/profile-aware redirect
   backend/                Supabase client, auth helpers, profiles service
@@ -65,16 +66,22 @@ src/
     profiles.ts           getProfile / updateProfile
   features/
     onboarding/           feature-sliced: screens, components, context
-  components/             shared UI primitives (themed-text, themed-view, …)
+    todo/                 screens, components, context, api/, smart-drop, types
+    calendar/             screens, components, utils
+    profile/              screens
+  services/               cross-feature service helpers (transcribe)
+  components/             shared UI primitives (themed-text, themed-view, floating-tab-bar, ui/icon-symbol)
   constants/              theme tokens
-  hooks/                  shared hooks
+  hooks/                  shared hooks (use-color-scheme, use-theme-color, color-scheme-override)
+  types/                  shared TS types (database, svg.d.ts)
+  assets/                 icons, splash, illustrations
 supabase/
   migrations/             SQL migrations (apply via dashboard or db push)
-assets/                   icons, splash, illustrations
+backend/                  Node/Express helper service (proxy-ics, plan-day)
 app.json                  Expo config
 ```
 
-Convention: feature-specific code lives in [src/features/](src/features/); shared code lives in [src/components/](src/components/), [src/hooks/](src/hooks/), [src/backend/](src/backend/).
+Convention: feature-specific code lives in [src/features/](src/features/) (including each feature's `api/`); shared code lives in [src/components/](src/components/), [src/hooks/](src/hooks/), [src/backend/](src/backend/), [src/services/](src/services/).
 
 ## Auth flow (current)
 
@@ -100,17 +107,6 @@ The "Confirm signup" email template in Supabase **must** use `{{ .Token }}` (the
 | `npm run doctor` | `expo-doctor` sanity check |
 | `npm run lint` | Expo ESLint |
 | `npm run reset-project` | Wipe the starter screens and start from a blank `app/` directory |
-
-## Layout
-
-```
-app/              expo-router screens (tabs, modal)
-components/       reusable UI
-constants/        theme
-hooks/            shared hooks
-assets/           icons, splash
-app.json          Expo config
-```
 
 ## Tech
 

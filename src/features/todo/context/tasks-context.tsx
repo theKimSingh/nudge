@@ -10,7 +10,7 @@ import {
   updateTask,
   toggleTask as toggleTaskService,
   deleteTask as deleteTaskService,
-} from '@/src/services/tasks';
+} from '../api/tasks';
 import { supabase } from '@/src/backend/supabase';
 
 type TaskTemplate = Omit<

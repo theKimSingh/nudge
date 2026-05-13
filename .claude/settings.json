@@ -29,11 +29,14 @@
       "Bash(grep -vE '^\\(node_modules|\\\\.expo|\\\\.git|package-lock\\\\.json\\)$')",
       "Bash(supabase --version)",
       "Bash(npx supabase *)",
-      "Bash(xargs ls -lh)"
+      "Bash(xargs ls -lh)",
+      "Bash(rm /Users/nam/Documents/Projects/Nudge/src/components/hello-wave.tsx /Users/nam/Documents/Projects/Nudge/src/components/parallax-scroll-view.tsx /Users/nam/Documents/Projects/Nudge/src/components/external-link.tsx /Users/nam/Documents/Projects/Nudge/src/components/haptic-tab.tsx /Users/nam/Documents/Projects/Nudge/src/components/ui/collapsible.tsx /Users/nam/Documents/Projects/Nudge/src/app/modal.tsx /Users/nam/Documents/Projects/Nudge/supabase/supabase.ts /Users/nam/Documents/Projects/Nudge/backend/transcribe.ts && echo \"Deleted dead files\")",
+      "Bash(npx --yes expo-doctor)"
     ],
     "additionalDirectories": [
       "/tmp",
-      "/Users/nam/Documents/Projects/Nudge/.claude/skills"
+      "/Users/nam/Documents/Projects/Nudge/.claude/skills",
+      "/Users/nam/Documents/Projects/Nudge/src/components"
     ]
   }
 }
