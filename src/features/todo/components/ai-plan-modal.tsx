@@ -35,10 +35,11 @@ type Props = {
 
 const SCREEN_HEIGHT = Dimensions.get('window').height;
 
-const API_URL =
-  Platform.OS === 'android'
-    ? 'http://10.0.2.2:8000/plan-day'
-    : 'http://localhost:8000/plan-day';
+const API_URL = (() => {
+  if (Platform.OS === 'android') return 'http://10.0.2.2:8000/plan-day';
+  if (Platform.OS === 'web') return 'http://127.0.0.1:8000/plan-day';
+  return 'http://localhost:8000/plan-day'; // iOS Simulator
+})();
 
 export function AIPlanModal({ visible, date, onClose, onPlan }: Props) {
   const scheme = useColorScheme() ?? 'light';

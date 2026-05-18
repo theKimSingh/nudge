@@ -8,7 +8,11 @@ require('dotenv').config();
 const apiKey = process.env.API_KEY;
 
 // Enable CORS for all routes
-app.use(cors());
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.use(express.json());
 
 // Health check
