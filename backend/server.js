@@ -1,11 +1,17 @@
 const express = require('express');
 const fetch = require('node-fetch');
 const cors = require('cors');
+const OpenAI = require('openai'); // 1. Import OpenAI instead of Gemini
+require('dotenv').config(); 
+
 const app = express();
 const PORT = 8000;
-const { GoogleGenerativeAI } = require('@google/generative-ai');
-require('dotenv').config(); 
-const apiKey = process.env.API_KEY;
+
+// Initialize OpenAI client pointing to your local Ollama instance
+const localAI = new OpenAI({
+  baseURL: 'http://localhost:11434/v1', // Ollama's local OpenAI-compatible endpoint
+  apiKey: 'ollama', // Required by the SDK, but ignored by Ollama
+});
 
 // Enable CORS for all routes
 app.use(cors({
@@ -20,46 +26,73 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
 });
 
-
 app.post('/plan-day', async (req, res) => {
   try {
     const { text, date } = req.body;
     if (!text || !date) {
       return res.status(400).json({ error: 'text and date are required' });
     }
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: 'gemini-3.1-flash-lite' });
-    console.log("Sending test prompt to Gemini...");
-    
-    const today = new Date().toISOString().split('T')[0];
-    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    const prompt = `Today's date is ${today} and the user's timezone is ${timezone}. 
-    Extract event details from the following text: '${text}'.  Keep the end of the event at 1 hour after beginning unless otherwise specified.
-    Return the result in a strict JSON format with the following keys: 
-    'summary', 'begin' (ISO 8601 format), 'end' (ISO 8601 format), 'description', 'location'. 
-    If a field is missing, use null. Only return the JSON.`;
 
-    const result = await model.generateContent({
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: {
-        responseMimeType: "application/json",
-        thinkingConfig: {
-          thinkingLevel: "MINIMAL"
+    console.log("Sending text to local Qwen model via Ollama...");
+    
+    // Using the 'date' passed from the frontend to ground the context properly
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    
+    const systemPrompt = `You are a helpful assistant that extracts event details. 
+    Today's date is ${date} and the user's timezone is ${timezone}. 
+    Extract event details from the user's text. Keep the end of the event at 1 hour after beginning unless otherwise specified.
+    You MUST respond with a strict JSON object containing ONLY these keys: 
+    "summary", "begin" (ISO 8601 format), "end" (ISO 8601 format), "description", "location". 
+    If a field is missing or unknown, use null. Output your response strictly as a raw JSON object. Do NOT wrap it in markdown code blocks (\`\`\`json), and do not output any other text.`;
+
+    // // Make the call to the local model
+    // const response = await localAI.chat.completions.create({
+    //   model: 'qwen3.5:2b', // Match the exact model name you pulled in Ollama
+    //   messages: [
+    //     { role: 'system', content: systemPrompt },
+    //     { role: 'user', content: text }
+    //   ],
+    //   // Tells the model to strictly output valid JSON
+    //   // response_format: { type: 'json_object' }, 
+    //   temperature: 0.1, // Low temperature ensures more reliable formatting
+      
+    // });
+
+    const response = await fetch('http://localhost:11434/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gemma4:e4b',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: text }
+        ],
+        format: 'json', // Native Ollama direct flag
+        think: false,
+        stream: false,  // Disables streaming so it finishes everything first
+        options: {
+          temperature: 0.1,
+          num_predict: 250
         }
-      }
+      })
     });
 
-    const response = await result.response;
-    const content = response.text();
-    console.log("Gemini response:", content);
+    const data = await response.json();
+    console.log("Raw Ollama Response Payload:", data);
+    console.log("Extracted Content:", data.message.content);
+
+    const content = data.message.content;
+    console.log("Local Qwen response:", content);
 
     if (!content || content.trim() === "") {
-      throw new Error('Gemini API returned no content');
+      throw new Error('Local model returned no content');
     }
 
     const extractedData = JSON.parse(content);
+    
+    // Keeping your exact original response structure intact for your frontend
     res.json({ tasks: Array.of(extractedData) });
-    // res.json({"hi": "hello"});
+
   } catch (error) {
     console.error('Plan day error:', error);
     res.status(500).json({ error: error.message });
@@ -75,7 +108,6 @@ app.get('/proxy-ics', async (req, res) => {
       return res.status(400).json({ error: 'URL parameter required' });
     }
 
-    // Validate URL is for calendar/ics
     if (!url.includes('calendar') || !url.includes('ics')) {
       return res.status(400).json({ error: 'Invalid calendar URL' });
     }
@@ -89,8 +121,6 @@ app.get('/proxy-ics', async (req, res) => {
     }
 
     const icsData = await response.text();
-
-    // Return as text/plain so it can be parsed on client
     console.log('ICS DATA:\n', icsData);
 
     res.set('Content-Type', 'text/plain');
@@ -102,7 +132,6 @@ app.get('/proxy-ics', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 Backend server running on http://localhost:${PORT}`);
-  console.log(`   - GET /health - Health check`);
-  console.log(`   - GET /proxy-ics?url=... - Proxy ICS URL`);
+  console.log(`🚀 Local Backend server running on http://localhost:${PORT}`);
+  console.log(`   - Connected locally to Ollama (Qwen3.5)`);
 });
