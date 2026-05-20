@@ -1,3 +1,15 @@
+export type TaskCategory =
+  | 'meal'
+  | 'exercise'
+  | 'work'
+  | 'study'
+  | 'sleep'
+  | 'selfcare'
+  | 'errand'
+  | 'social'
+  | 'health'
+  | 'other';
+
 export type Database = {
   public: {
     Tables: {
@@ -7,6 +19,16 @@ export type Database = {
           name: string;
           goal: 'work' | 'study' | 'balance' | null;
           onboarded: boolean;
+          // Added in 20260514130000_profile_meal_defaults; integer minutes
+          // from midnight (0..1439). Defaults: 480 / 750 / 1110.
+          breakfast_time_minutes: number;
+          lunch_time_minutes: number;
+          dinner_time_minutes: number;
+          // Added in 20260517120000_profile_section_anchors; integer minutes
+          // from midnight (0..1439). Defaults: 420 / 780 / 1080.
+          morning_start_minutes: number;
+          afternoon_start_minutes: number;
+          evening_start_minutes: number;
           created_at: string;
           updated_at: string;
         };
@@ -15,6 +37,12 @@ export type Database = {
           name?: string;
           goal?: 'work' | 'study' | 'balance' | null;
           onboarded?: boolean;
+          breakfast_time_minutes?: number;
+          lunch_time_minutes?: number;
+          dinner_time_minutes?: number;
+          morning_start_minutes?: number;
+          afternoon_start_minutes?: number;
+          evening_start_minutes?: number;
           created_at?: string;
           updated_at?: string;
         };
@@ -23,6 +51,12 @@ export type Database = {
           name?: string;
           goal?: 'work' | 'study' | 'balance' | null;
           onboarded?: boolean;
+          breakfast_time_minutes?: number;
+          lunch_time_minutes?: number;
+          dinner_time_minutes?: number;
+          morning_start_minutes?: number;
+          afternoon_start_minutes?: number;
+          evening_start_minutes?: number;
           created_at?: string;
           updated_at?: string;
         };
@@ -41,6 +75,7 @@ export type Database = {
           done: boolean;
           color: string | null;
           source: 'todo_list' | 'calendar_import';
+          category: TaskCategory;
           created_at: string;
           updated_at: string;
         };
@@ -57,6 +92,7 @@ export type Database = {
           done?: boolean;
           color?: string | null;
           source?: 'todo_list' | 'calendar_import';
+          category?: TaskCategory;
           created_at?: string;
           updated_at?: string;
         };
@@ -73,6 +109,7 @@ export type Database = {
           done?: boolean;
           color?: string | null;
           source?: 'todo_list' | 'calendar_import';
+          category?: TaskCategory;
           created_at?: string;
           updated_at?: string;
         };

@@ -1,98 +1,78 @@
 const express = require('express');
-const fetch = require('node-fetch');
 const cors = require('cors');
+const fetch = require('node-fetch');
+const path = require('path');
+const http = require('http');
+const { URL } = require('url');
+const { randomUUID } = require('crypto');
+const { WebSocketServer } = require('ws');
+
+require('dotenv').config({ path: path.resolve(__dirname, '..', '.env') });
+
+const { requireUser, requireUserFromToken } = require('./lib/supabase');
+const { plan, transcribe, runAgentTurn } = require('./lib/gemini');
+const { buildSystemPrompt } = require('./lib/prompt');
+const { expandRepeatDates, resolveConflict } = require('./lib/repeat');
+const { executeTool } = require('./lib/executor');
+const { inferRoutineDurations } = require('./lib/inference');
+const { inferCategory } = require('./lib/categorize');
+
+const VALID_RULES = ['none', 'daily', 'weekdays', 'weekly'];
+const VALID_SCOPES = ['instance', 'series', 'this_and_future'];
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function clampTime(t) {
+  if (typeof t !== 'number' || !Number.isFinite(t)) return 540;
+  return Math.max(0, Math.min(1439, Math.round(t)));
+}
+function clampDuration(d) {
+  if (typeof d !== 'number' || !Number.isFinite(d)) return 30;
+  return Math.max(5, Math.round(d));
+}
+function isYYYYMMDD(s) {
+  return typeof s === 'string' && DATE_RE.test(s);
+}
+function pickScope(s) {
+  return VALID_SCOPES.includes(s) ? s : 'instance';
+}
+function pickRule(r) {
+  return VALID_RULES.includes(r) ? r : 'none';
+}
+
 const app = express();
 const PORT = 8000;
-const { GoogleGenerativeAI } = require('@google/generative-ai');
-require('dotenv').config(); 
-const apiKey = process.env.API_KEY;
 
-// Enable CORS for all routes
-app.use(cors({
-  origin: '*',
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
-app.use(express.json());
+const SUPABASE_URL = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL;
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+if (!process.env.GEMINI_API_KEY) {
+  console.warn('[nudge-backend] GEMINI_API_KEY not set — /plan-day-audio will fail until it is configured in .env');
+}
+if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+  console.warn('[nudge-backend] SUPABASE_URL / SUPABASE_ANON_KEY (or EXPO_PUBLIC_* equivalents) not set — /plan-day-audio will fail');
+}
 
-// Health check
-app.get('/health', (req, res) => {
+app.use(cors());
+app.use(express.json({ limit: '10mb' }));
+
+app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
 });
 
-
-app.post('/plan-day', async (req, res) => {
-  try {
-    const { text, date } = req.body;
-    if (!text || !date) {
-      return res.status(400).json({ error: 'text and date are required' });
-    }
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: 'gemini-3.1-flash-lite' });
-    console.log("Sending test prompt to Gemini...");
-    
-    const today = new Date().toISOString().split('T')[0];
-    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    const prompt = `Today's date is ${today} and the user's timezone is ${timezone}. 
-    Extract event details from the following text: '${text}'.  Keep the end of the event at 1 hour after beginning unless otherwise specified.
-    Return the result in a strict JSON format with the following keys: 
-    'summary', 'begin' (ISO 8601 format), 'end' (ISO 8601 format), 'description', 'location'. 
-    If a field is missing, use null. Only return the JSON.`;
-
-    const result = await model.generateContent({
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: {
-        responseMimeType: "application/json",
-        thinkingConfig: {
-          thinkingLevel: "MINIMAL"
-        }
-      }
-    });
-
-    const response = await result.response;
-    const content = response.text();
-    console.log("Gemini response:", content);
-
-    if (!content || content.trim() === "") {
-      throw new Error('Gemini API returned no content');
-    }
-
-    const extractedData = JSON.parse(content);
-    res.json({ tasks: Array.of(extractedData) });
-    // res.json({"hi": "hello"});
-  } catch (error) {
-    console.error('Plan day error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Proxy endpoint for fetching ICS files
+// Proxy endpoint for fetching ICS calendar feeds from the client without CORS.
 app.get('/proxy-ics', async (req, res) => {
   try {
     const { url } = req.query;
-
-    if (!url) {
-      return res.status(400).json({ error: 'URL parameter required' });
-    }
-
-    // Validate URL is for calendar/ics
-    if (!url.includes('calendar') || !url.includes('ics')) {
+    if (!url) return res.status(400).json({ error: 'URL parameter required' });
+    if (!String(url).includes('calendar') || !String(url).includes('ics')) {
       return res.status(400).json({ error: 'Invalid calendar URL' });
     }
-
     const response = await fetch(url);
-
     if (!response.ok) {
       return res
         .status(response.status)
         .json({ error: `Failed to fetch ICS: ${response.statusText}` });
     }
-
     const icsData = await response.text();
-
-    // Return as text/plain so it can be parsed on client
-    console.log('ICS DATA:\n', icsData);
-
     res.set('Content-Type', 'text/plain');
     res.send(icsData);
   } catch (error) {
@@ -101,8 +81,1224 @@ app.get('/proxy-ics', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`🚀 Backend server running on http://localhost:${PORT}`);
-  console.log(`   - GET /health - Health check`);
-  console.log(`   - GET /proxy-ics?url=... - Proxy ICS URL`);
+const LRU_TTL_MS = 5 * 60 * 1000;
+const idempotencyCache = new Map();
+
+function addDays(yyyyMmDd, n) {
+  const d = new Date(`${yyyyMmDd}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+const ALLOWED_AUDIO_MIMES = [
+  'audio/aac',
+  'audio/m4a',
+  'audio/mp4',
+  'audio/wav',
+  'audio/webm',
+  'audio/ogg',
+  'audio/mpeg',
+  'audio/flac',
+];
+
+app.post('/plan-day-audio', async (req, res) => {
+  try {
+    const { user, supabase } = await requireUser(req);
+    const { audio_base64, mime_type, date, text, request_id } = req.body || {};
+
+    if (!date) return res.status(400).json({ error: 'date is required' });
+    if (!request_id) return res.status(400).json({ error: 'request_id is required' });
+    if (!audio_base64 && !text) return res.status(400).json({ error: 'audio or text required' });
+    if (audio_base64 && audio_base64.length > 7 * 1024 * 1024) {
+      return res.status(400).json({ error: 'audio too large (max ~5MB decoded)' });
+    }
+    if (audio_base64 && mime_type && !ALLOWED_AUDIO_MIMES.includes(mime_type)) {
+      return res.status(400).json({ error: 'unsupported mime_type' });
+    }
+
+    // Per-process idempotency. v2: replace with Redis when running multiple replicas.
+    const idKey = `${user.id}:${request_id}`;
+    const cached = idempotencyCache.get(idKey);
+    if (cached && Date.now() - cached.ts < LRU_TTL_MS) {
+      return res.json(cached.response);
+    }
+
+    const dateMinus3 = addDays(date, -3);
+    const datePlus3 = addDays(date, 3);
+
+    const [profileQ, tasksQ, constraintsQ] = await Promise.all([
+      supabase.from('profiles').select('name, goal').eq('id', user.id).maybeSingle(),
+      supabase
+        .from('tasks')
+        .select('id, title, date, time_minutes, duration_minutes, repeat_rule, series_id, done')
+        .eq('user_id', user.id)
+        .gte('date', dateMinus3)
+        .lte('date', datePlus3),
+      supabase.rpc('get_top_constraints', { p_limit: 50 }),
+    ]);
+
+    const systemPrompt = buildSystemPrompt({
+      profile: profileQ.data,
+      target_date: date,
+      tasks: tasksQ.data ?? [],
+      constraints: constraintsQ.data ?? [],
+      tz: req.headers['x-timezone'] || 'UTC',
+    });
+
+    let planJson;
+    try {
+      planJson = await plan({
+        audioBase64: audio_base64,
+        mimeType: mime_type || 'audio/aac',
+        userText: text,
+        systemPrompt,
+      });
+    } catch (e) {
+      console.error('Gemini call failed:', e.message, e.finishReason || '', e.partial || '');
+      return res.status(502).json({ error: 'AI response invalid', code: 'GEMINI_PARSE_ERROR' });
+    }
+
+    const allTasks = tasksQ.data ?? [];
+    const tasksById = new Map(allTasks.map((t) => [t.id, t]));
+    const ops = (planJson.operations ?? []).filter((op) => {
+      if (op.op_type === 'create') return !!op.title;
+      if (op.op_type === 'update' || op.op_type === 'delete') {
+        return !!op.task_id && tasksById.has(op.task_id);
+      }
+      return false;
+    });
+
+    let created = 0;
+    let updated = 0;
+    let deleted = 0;
+
+    // Tracks newly inserted rows so back-to-back ops in the same batch
+    // (e.g. AI creates two events in one turn) still see each other for
+    // conflict resolution.
+    const pendingTasks = [];
+
+    for (const op of ops) {
+      if (op.op_type === 'create') {
+        const startDate = isYYYYMMDD(op.date) ? op.date : date;
+        const rule = pickRule(op.repeat_rule);
+        const duration = clampDuration(op.duration_minutes);
+        const desired = clampTime(op.time_minutes);
+        const adjusted = resolveConflict(
+          desired,
+          duration,
+          startDate,
+          allTasks.concat(pendingTasks),
+        );
+
+        const baseRow = {
+          user_id: user.id,
+          title: String(op.title).slice(0, 200),
+          time_minutes: adjusted,
+          duration_minutes: duration,
+          repeat_rule: rule,
+          done: false,
+          category: inferCategory(op.title),
+        };
+
+        if (rule === 'none') {
+          const row = { ...baseRow, date: startDate };
+          const { data: ins, error } = await supabase.from('tasks').insert(row).select('id');
+          if (error) {
+            console.error('insert task failed:', error.message);
+          } else {
+            created += ins?.length ?? 0;
+            if (ins?.[0]) pendingTasks.push({ ...row, id: ins[0].id });
+          }
+        } else {
+          const seriesId = randomUUID();
+          const dates = expandRepeatDates(startDate, rule);
+          const rows = dates.map((d) => ({ ...baseRow, date: d, series_id: seriesId }));
+          const { data: ins, error } = await supabase.from('tasks').insert(rows).select('id, date');
+          if (error) {
+            console.error('insert series failed:', error.message);
+          } else {
+            created += ins?.length ?? 0;
+            for (const r of ins ?? []) {
+              pendingTasks.push({ ...baseRow, date: r.date, id: r.id, series_id: seriesId });
+            }
+          }
+        }
+      } else if (op.op_type === 'update') {
+        const target = tasksById.get(op.task_id);
+        if (!target) continue;
+        const scope = pickScope(op.scope);
+
+        const changingRule =
+          op.repeat_rule !== undefined &&
+          VALID_RULES.includes(op.repeat_rule) &&
+          op.repeat_rule !== target.repeat_rule;
+
+        if (changingRule) {
+          // Recurrence change = rebuild: delete the in-scope rows, insert
+          // a fresh schedule anchored at the picked instance's date.
+          const newRule = op.repeat_rule;
+          const newTitle =
+            op.title !== undefined ? String(op.title).slice(0, 200) : target.title;
+          const newTime = clampTime(
+            op.time_minutes !== undefined ? op.time_minutes : target.time_minutes,
+          );
+          const newDur = clampDuration(
+            op.duration_minutes !== undefined ? op.duration_minutes : target.duration_minutes,
+          );
+          const newStartDate = isYYYYMMDD(op.date) ? op.date : target.date;
+
+          let delQ = supabase.from('tasks').delete().eq('user_id', user.id);
+          if (scope === 'series' && target.series_id) {
+            delQ = delQ.eq('series_id', target.series_id);
+          } else if (scope === 'this_and_future' && target.series_id) {
+            delQ = delQ.eq('series_id', target.series_id).gte('date', target.date);
+          } else {
+            delQ = delQ.eq('id', target.id);
+          }
+          const { error: delErr } = await delQ;
+          if (delErr) {
+            console.error('restructure delete failed:', delErr.message);
+            continue;
+          }
+
+          const adjustedTime = resolveConflict(
+            newTime,
+            newDur,
+            newStartDate,
+            allTasks.concat(pendingTasks).filter((t) => t.id !== target.id),
+          );
+
+          const baseRow = {
+            user_id: user.id,
+            title: newTitle,
+            time_minutes: adjustedTime,
+            duration_minutes: newDur,
+            repeat_rule: newRule,
+            done: false,
+            category: inferCategory(newTitle),
+          };
+
+          if (newRule === 'none') {
+            const row = { ...baseRow, date: newStartDate };
+            const { data: ins, error } = await supabase.from('tasks').insert(row).select('id');
+            if (error) console.error('restructure insert failed:', error.message);
+            else {
+              updated += ins?.length ?? 0;
+              if (ins?.[0]) pendingTasks.push({ ...row, id: ins[0].id });
+            }
+          } else {
+            const seriesId = randomUUID();
+            const dates = expandRepeatDates(newStartDate, newRule);
+            const rows = dates.map((d) => ({ ...baseRow, date: d, series_id: seriesId }));
+            const { data: ins, error } = await supabase
+              .from('tasks')
+              .insert(rows)
+              .select('id, date');
+            if (error) console.error('restructure series insert failed:', error.message);
+            else {
+              updated += ins?.length ?? 0;
+              for (const r of ins ?? []) {
+                pendingTasks.push({ ...baseRow, date: r.date, id: r.id, series_id: seriesId });
+              }
+            }
+          }
+          continue;
+        }
+
+        // Normal update path
+        const patch = {};
+        if (op.title !== undefined) patch.title = String(op.title).slice(0, 200);
+        if (op.time_minutes !== undefined) patch.time_minutes = clampTime(op.time_minutes);
+        if (op.duration_minutes !== undefined) {
+          patch.duration_minutes = clampDuration(op.duration_minutes);
+        }
+        if (typeof op.done === 'boolean') patch.done = op.done;
+        // `date` only meaningful for instance scope — setting all rows in a
+        // series to the same date is almost never what the user wants.
+        if (scope === 'instance' && isYYYYMMDD(op.date)) patch.date = op.date;
+        // Recompute category on rename; otherwise leave the stored value alone.
+        if (patch.title !== undefined) patch.category = inferCategory(patch.title);
+
+        if (!Object.keys(patch).length) continue;
+
+        // Conflict-resolve only for instance moves (series-wide time changes
+        // intentionally honor the requested time across all dates).
+        if (
+          scope === 'instance' &&
+          (patch.time_minutes !== undefined || patch.date !== undefined)
+        ) {
+          const newDate = patch.date ?? target.date;
+          const newTime = patch.time_minutes ?? target.time_minutes;
+          const newDur = patch.duration_minutes ?? target.duration_minutes;
+          const adjusted = resolveConflict(
+            newTime,
+            newDur,
+            newDate,
+            allTasks.concat(pendingTasks),
+            target.id,
+          );
+          if (adjusted !== newTime) patch.time_minutes = adjusted;
+        }
+
+        let q = supabase.from('tasks').update(patch).eq('user_id', user.id);
+        if (scope === 'series' && target.series_id) {
+          q = q.eq('series_id', target.series_id);
+        } else if (scope === 'this_and_future' && target.series_id) {
+          q = q.eq('series_id', target.series_id).gte('date', target.date);
+        } else {
+          q = q.eq('id', op.task_id);
+        }
+        const { data: updRows, error } = await q.select('id');
+        if (error) console.error('update task failed:', error.message);
+        else updated += updRows?.length ?? 0;
+      } else if (op.op_type === 'delete') {
+        const target = tasksById.get(op.task_id);
+        if (!target) continue;
+        const scope = pickScope(op.scope);
+
+        let q = supabase.from('tasks').delete().eq('user_id', user.id);
+        if (scope === 'series' && target.series_id) {
+          q = q.eq('series_id', target.series_id);
+        } else if (scope === 'this_and_future' && target.series_id) {
+          q = q.eq('series_id', target.series_id).gte('date', target.date);
+        } else {
+          q = q.eq('id', op.task_id);
+        }
+        const { data: delRows, error } = await q.select('id');
+        if (error) console.error('delete task failed:', error.message);
+        else deleted += delRows?.length ?? 0;
+      }
+    }
+
+    const highConfidence = (planJson.new_constraints ?? []).filter(
+      (c) => c.confidence === 'high',
+    );
+    for (const c of highConfidence) {
+      const { error } = await supabase.rpc('upsert_constraint', {
+        p_text: String(c.text || '').trim().toLowerCase(),
+        p_category: c.category,
+        p_strength: c.strength,
+      });
+      if (error) console.error('upsert_constraint failed:', error.message);
+    }
+    for (const id of planJson.reinforced_constraint_ids ?? []) {
+      const { error } = await supabase.rpc('bump_constraint', { p_id: id });
+      if (error) console.error('bump_constraint failed:', error.message);
+    }
+    const { error: evictErr } = await supabase.rpc('evict_old_constraints', { p_cap: 80 });
+    if (evictErr) console.error('evict_old_constraints failed:', evictErr.message);
+
+    const summary =
+      (planJson.summary && String(planJson.summary).trim()) ||
+      (ops.length === 0
+        ? "No changes — I didn't catch a clear plan."
+        : 'Updated your schedule.');
+
+    const response = {
+      summary,
+      applied: { created, updated, deleted },
+      new_constraints: highConfidence.length,
+    };
+
+    idempotencyCache.set(idKey, { ts: Date.now(), response });
+
+    return res.json(response);
+  } catch (e) {
+    const status = e.status || 500;
+    console.error('/plan-day-audio error:', e);
+    return res.status(status).json({ error: e.message || 'Server error' });
+  }
+});
+
+app.post('/transcribe', async (req, res) => {
+  try {
+    await requireUser(req);
+    const { audio_base64, mime_type } = req.body || {};
+
+    if (!audio_base64) return res.status(400).json({ error: 'audio required' });
+    if (audio_base64.length > 7 * 1024 * 1024) {
+      return res.status(400).json({ error: 'audio too large (max ~5MB decoded)' });
+    }
+    if (mime_type && !ALLOWED_AUDIO_MIMES.includes(mime_type)) {
+      return res.status(400).json({ error: 'unsupported mime_type' });
+    }
+
+    const transcript = await transcribe({
+      audioBase64: audio_base64,
+      mimeType: mime_type || 'audio/aac',
+    });
+    return res.json({ transcript });
+  } catch (e) {
+    const status = e.status || 500;
+    console.error('/transcribe error:', e.message, e.finishReason || '');
+    return res.status(status).json({ error: e.message || 'Server error' });
+  }
+});
+
+// REST harness for the agent loop. Drives the same executor/journal path the
+// WS layer (Agent C) will use, but synchronously returns the full transcript
+// of tool calls + results for unit tests and dev-time iteration.
+//
+// Body: { transcript: string, seg_id?: string, date?: YYYY-MM-DD, history?: Content[] }
+// Response: { history, ops:[{tool_call, tool_result}, ...] }
+const MAX_AGENT_ITERATIONS = 8;
+
+// Shared agent-loop executor. Used by /agent/turn (REST) and the WS handler.
+// `emit(serverEvent)` is the sink — REST collects into an array, WS forwards
+// to the socket and pushes onto a per-session replay buffer.
+async function runAgentSegment({ session, transcript, history, systemPrompt, signal, emit }) {
+  history.push({ role: 'user', parts: [{ text: transcript }] });
+  let stoppedReason = null;
+  let summary = null;
+  // Real tool executions (excludes `done`, which is just a terminal signal).
+  // Used by the caller to decide whether an abort should still drop the
+  // transcript buffer — once a tool has run, the work is committed even if
+  // the loop got cut short, so the same transcript must NOT re-run.
+  let toolsExecuted = 0;
+  const segStart = Date.now();
+  console.log(`[agent] ▶ seg=${session.segId} transcript="${transcript.slice(0, 120)}" history=${history.length}msgs`);
+
+  for (let iter = 0; iter < MAX_AGENT_ITERATIONS; iter++) {
+    if (signal?.aborted) { stoppedReason = 'aborted'; break; }
+
+    // Synthetic-undo injection (WS only). Runs as its own mini-iteration so
+    // the model sees the functionResponse on the next turn and can react.
+    if (session.pendingUndo) {
+      const u = session.pendingUndo;
+      session.pendingUndo = null;
+      await invokeAndJournal({
+        session,
+        history,
+        emit,
+        call: { id: u.client_op_id, name: 'undo_last', args: { n: u.n } },
+      });
+      // Fall through; let the model react on the next iteration.
+      continue;
+    }
+
+    emit({ type: 'agent_thinking', seg_id: session.segId });
+    const iterStart = Date.now();
+
+    let turn;
+    try {
+      turn = await runAgentTurn({ history, systemPrompt, signal });
+    } catch (e) {
+      if (signal?.aborted || e?.name === 'AbortError') {
+        stoppedReason = 'aborted';
+        break;
+      }
+      throw e;
+    }
+
+    const calls = turn.functionCalls ?? [];
+    console.log(`[agent] iter ${iter + 1}/${MAX_AGENT_ITERATIONS} in ${Date.now() - iterStart}ms → ${calls.length} call(s) [${calls.map((c) => c.name).join(', ')}]`);
+    if (turn.modelContent) history.push(turn.modelContent);
+    else if (calls.length) {
+      history.push({ role: 'model', parts: calls.map((c) => ({ functionCall: c })) });
+    }
+
+    // Bail out if abort fired while the model was generating — we don't want
+    // to start executing tool calls from a turn the user already cancelled.
+    if (signal?.aborted) { stoppedReason = 'aborted'; break; }
+
+    if (!calls.length) { stoppedReason = 'no_calls'; break; }
+
+    let sawDone = false;
+    for (const call of calls) {
+      if (signal?.aborted) { stoppedReason = 'aborted'; break; }
+      const result = await invokeAndJournal({ session, history, emit, call });
+      if (call.name === 'done') {
+        sawDone = true;
+        summary = String(call.args?.summary || '');
+        break;
+      }
+      toolsExecuted += 1;
+      void result;
+    }
+    if (sawDone) { stoppedReason = 'done'; break; }
+    if (stoppedReason === 'aborted') break;
+  }
+  if (!stoppedReason) stoppedReason = 'max_iterations';
+
+  console.log(`[agent] ◼ seg=${session.segId} stopped=${stoppedReason} in ${Date.now() - segStart}ms tools=${toolsExecuted}${summary ? ` summary="${summary.slice(0, 100)}"` : ''}`);
+  emit({ type: 'agent_done', seg_id: session.segId });
+  if (summary != null) emit({ type: 'summary', text: summary });
+  return { stoppedReason, summary, toolsExecuted };
+}
+
+async function invokeAndJournal({ session, history, emit, call }) {
+  const callId = call.id || `${call.name}:${randomUUID()}`;
+  const callForExec = { ...call, id: callId };
+  const argsPreview = JSON.stringify(call.args || {}).slice(0, 240);
+  console.log(`[tool] → ${call.name}(${argsPreview}) call_id=${callId}`);
+  emit({ type: 'tool_call', call_id: callId, name: call.name, args: call.args || {} });
+  const toolStart = Date.now();
+  const result = await executeTool(session, callForExec);
+  const resultPreview = JSON.stringify(result.payload || {}).slice(0, 240);
+  console.log(`[tool] ${result.ok ? '✓' : '✗'} ${call.name} in ${Date.now() - toolStart}ms payload=${resultPreview}`);
+  emit({
+    type: 'tool_result',
+    call_id: callId,
+    ok: !!result.ok,
+    payload: result.payload,
+    journal_entry: result.journal_entry,
+  });
+  history.push({
+    role: 'user',
+    parts: [
+      {
+        functionResponse: {
+          name: call.name,
+          response: result.payload ?? {},
+        },
+      },
+    ],
+  });
+  return result;
+}
+
+app.post('/agent/turn', async (req, res) => {
+  try {
+    const { user, supabase: supa } = await requireUser(req);
+    const { transcript, seg_id, history: incomingHistory } = req.body || {};
+    const date = req.body?.date || new Date().toISOString().slice(0, 10);
+
+    if (!transcript || typeof transcript !== 'string') {
+      return res.status(400).json({ error: 'transcript (string) required' });
+    }
+    if (!isYYYYMMDD(date)) {
+      return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
+    }
+
+    const tz = req.headers['x-timezone'] || 'UTC';
+    const segId = seg_id || `seg:${randomUUID()}`;
+    const sessionId = `rest:${segId}`;
+
+    const dateMinus3 = addDays(date, -3);
+    const datePlus3 = addDays(date, 3);
+
+    const [profileQ, tasksQ, constraintsQ, inferred] = await Promise.all([
+      supa
+        .from('profiles')
+        .select('name, goal, breakfast_time_minutes, lunch_time_minutes, dinner_time_minutes, morning_start_minutes, afternoon_start_minutes, evening_start_minutes')
+        .eq('id', user.id)
+        .maybeSingle(),
+      supa
+        .from('tasks')
+        .select('id, title, date, time_minutes, duration_minutes, repeat_rule, series_id, done')
+        .eq('user_id', user.id)
+        .gte('date', dateMinus3)
+        .lte('date', datePlus3),
+      supa.rpc('get_top_constraints', { p_limit: 50 }),
+      inferRoutineDurations(supa, user.id),
+    ]);
+
+    const profile = profileQ.data || null;
+    const nowMin = computeNowMinutes(tz);
+
+    const systemPrompt = buildSystemPrompt({
+      profile,
+      target_date: date,
+      tasks: tasksQ.data ?? [],
+      constraints: constraintsQ.data ?? [],
+      tz,
+      inferred,
+      now_minutes: nowMin,
+    });
+
+    const session = {
+      supa,
+      profile,
+      userId: user.id,
+      sessionId,
+      segId,
+      ws: null,
+    };
+
+    const history = Array.isArray(incomingHistory) ? incomingHistory.slice() : [];
+
+    // REST emit sink: collect events; reconstruct the legacy {tool_call,
+    // tool_result} pairs so the response shape is unchanged.
+    const events = [];
+    const emit = (e) => events.push(e);
+
+    const { stoppedReason } = await runAgentSegment({
+      session,
+      transcript,
+      history,
+      systemPrompt,
+      emit,
+    });
+
+    const callsById = new Map();
+    const collected = [];
+    for (const ev of events) {
+      if (ev.type === 'tool_call') {
+        callsById.set(ev.call_id, { name: ev.name, args: ev.args, id: ev.call_id });
+      } else if (ev.type === 'tool_result') {
+        const tc = callsById.get(ev.call_id) || { name: 'unknown', args: {}, id: ev.call_id };
+        collected.push({
+          tool_call: tc,
+          tool_result: {
+            ok: ev.ok,
+            payload: ev.payload,
+            journal_entry: ev.journal_entry,
+          },
+        });
+      }
+    }
+
+    return res.json({ history, ops: collected, stopped_reason: stoppedReason });
+  } catch (e) {
+    const status = e.status || 500;
+    console.error('/agent/turn error:', e);
+    return res.status(status).json({ error: e.message || 'Server error' });
+  }
+});
+
+function computeNowMinutes(tz) {
+  try {
+    const fmt = new Intl.DateTimeFormat('en-GB', {
+      timeZone: tz || 'UTC',
+      hour12: false,
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    const parts = fmt.formatToParts(new Date());
+    const h = Number(parts.find((p) => p.type === 'hour')?.value || 0);
+    const m = Number(parts.find((p) => p.type === 'minute')?.value || 0);
+    if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+    return h * 60 + m;
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// WebSocket: /agent/session
+// ---------------------------------------------------------------------------
+//
+// Per-session in-memory state. Survives 30s past unexpected WS close so
+// reconnect+resume can replay buffered tool_result events.
+const sessions = new Map(); // session_id -> Session
+
+const SESSION_GRACE_MS = 30 * 1000;
+// Hard idle timeout: if a session receives no client message (audio or JSON)
+// for this long, force-close it server-side. Catches clients that go away
+// silently without sending cancel_session. Independent of SESSION_GRACE_MS,
+// which applies AFTER a WS close while we wait for a reconnect.
+const SESSION_IDLE_MS = 90 * 1000;
+const WATCHDOG_SILENCE_MS = 1500;
+const LONG_UTTERANCE_MS = 8000;
+const DEBOUNCE_BOUNDARY_MS = 250;
+const REPLAY_BUFFER_SIZE = 50;
+const MAX_AUDIO_BUFFER_BYTES = 5 * 1024 * 1024;
+// Grace at the start of an in-flight agent loop during which a new boundary
+// will NOT abort the loop. Most agent turns finish in ~1-3s; aborting on
+// every follow-up utterance (which often arrives because the user assumes
+// nothing happened) wastes the first turn's STT + Gemini work. After the
+// grace window, real barge-in still works.
+const LOOP_ABORT_GRACE_MS = 2_500;
+
+function wsSend(ws, event) {
+  if (!ws || ws.readyState !== ws.OPEN) return;
+  try {
+    ws.send(JSON.stringify(event));
+  } catch (e) {
+    // Surface but don't kill the loop on a transient send error.
+    console.error('[ws] send failed:', e.message);
+  }
+}
+
+function pushReplay(session, event) {
+  // Only buffer events that are useful to replay after a reconnect — the
+  // tool_result stream is what the client needs to reconcile journal state.
+  if (event.type !== 'tool_result') return;
+  session.replay.push(event);
+  if (session.replay.length > REPLAY_BUFFER_SIZE) session.replay.shift();
+}
+
+function clearSessionTimers(session) {
+  if (session.watchdogTimer) { clearTimeout(session.watchdogTimer); session.watchdogTimer = null; }
+  if (session.longUtterTimer) { clearTimeout(session.longUtterTimer); session.longUtterTimer = null; }
+  if (session.closeTimer) { clearTimeout(session.closeTimer); session.closeTimer = null; }
+  if (session.idleTimer) { clearTimeout(session.idleTimer); session.idleTimer = null; }
+}
+
+function resetIdleTimer(session) {
+  if (session.idleTimer) clearTimeout(session.idleTimer);
+  session.idleTimer = setTimeout(() => {
+    session.idleTimer = null;
+    console.log(`[ws] session ${session.sessionId} force-closed (idle ${SESSION_IDLE_MS}ms)`);
+    try { session.ws?.close(1000, 'idle_timeout'); } catch {}
+    teardownSession(session.sessionId, 'idle_timeout');
+  }, SESSION_IDLE_MS);
+}
+
+function teardownSession(sessionId, reason) {
+  const s = sessions.get(sessionId);
+  if (!s) return;
+  clearSessionTimers(s);
+  try { s.abortCurrent?.(); } catch {}
+  sessions.delete(sessionId);
+  console.log(`[ws] session ${sessionId} torn down (${reason})`);
+}
+
+function scheduleWatchdog(session) {
+  if (session.watchdogTimer) clearTimeout(session.watchdogTimer);
+  session.watchdogTimer = setTimeout(() => {
+    session.watchdogTimer = null;
+    console.log(`[ws] silence_watchdog fired (audio buffered=${session.audioBufferBytes}B)`);
+    if (session.audioBuffer.length > 0) {
+      void handleBoundary(session, 'silence_watchdog');
+    }
+  }, WATCHDOG_SILENCE_MS);
+}
+
+function scheduleLongUtterance(session) {
+  if (session.longUtterTimer) clearTimeout(session.longUtterTimer);
+  session.longUtterTimer = setTimeout(() => {
+    session.longUtterTimer = null;
+    console.log(`[ws] long_utterance_watchdog fired (audio buffered=${session.audioBufferBytes}B)`);
+    if (session.audioBuffer.length > 0) {
+      void handleBoundary(session, 'long_utterance_watchdog');
+    }
+  }, LONG_UTTERANCE_MS);
+}
+
+async function handleBoundary(session, source) {
+  // Debounce: coalesce boundaries firing within 250ms of the previous one.
+  const now = Date.now();
+  if (now - session.lastUtteranceEndTs < DEBOUNCE_BOUNDARY_MS) {
+    console.log(`[ws] handleBoundary(${source}) skipped — debounce window`);
+    return;
+  }
+  session.lastUtteranceEndTs = now;
+
+  if (session.watchdogTimer) { clearTimeout(session.watchdogTimer); session.watchdogTimer = null; }
+  if (session.longUtterTimer) { clearTimeout(session.longUtterTimer); session.longUtterTimer = null; }
+
+  if (!session.audioBuffer.length) {
+    console.log(`[ws] handleBoundary(${source}) skipped — empty audio buffer`);
+    return;
+  }
+
+  // Snapshot + reset audio buffer. NOTE: each entry in audioBuffer is a
+  // complete .m4a file (the chunker stops+restarts every ~1s — see the TODO
+  // at src/features/agent/lib/audio-chunker.ts top). They are NOT
+  // concatenable bytes — `Buffer.concat` produces an invalid container that
+  // Gemini transcribes as just the first chunk. Transcribe each chunk
+  // separately and join the resulting text.
+  const audioChunks = session.audioBuffer.slice();
+  const totalBytes = session.audioBufferBytes;
+  session.audioBuffer = [];
+  session.audioBufferBytes = 0;
+  session.speechStartTs = null;
+
+  const segId = `seg:${randomUUID()}`;
+  session.segId = segId;
+
+  // If a loop is running, abort it ONLY if it's been running long enough
+  // that the user clearly meant to barge in. Within the first ~2.5s, the
+  // new utterance is almost always a follow-up the user kept saying because
+  // they didn't see feedback yet — we want the first turn to complete (the
+  // model will see the appended transcript in the next loop). After the
+  // grace, real barge-in (user explicitly cancelling a long task) works as
+  // before.
+  if (session.loopRunning) {
+    const loopAge = Date.now() - (session.loopStartedAt || 0);
+    if (loopAge > LOOP_ABORT_GRACE_MS) {
+      console.log('[ws] aborting in-flight loop', { sessionId: session.sessionId, segId: session.segId, loopAge });
+      try { session.abortCurrent?.(); } catch {}
+    } else {
+      console.log(`[ws] new boundary during loop (age=${loopAge}ms) — letting it finish, queuing utterance for next segment`);
+    }
+  }
+
+  console.log(`[stt] boundary=${source} seg=${segId} ${audioChunks.length} chunk(s) ${totalBytes}B → transcribing…`);
+  const sttStart = Date.now();
+  const parts = [];
+  try {
+    for (let i = 0; i < audioChunks.length; i++) {
+      const piece = await transcribe({
+        audioBase64: audioChunks[i].toString('base64'),
+        mimeType: 'audio/m4a',
+      });
+      const trimmed = String(piece || '').trim();
+      if (trimmed) parts.push(trimmed);
+    }
+  } catch (e) {
+    console.error('[ws] transcribe failed:', e.message);
+    const ev = { type: 'error', code: 'TRANSCRIBE_FAILED', message: e.message || 'transcribe error' };
+    wsSend(session.ws, ev);
+    return;
+  }
+
+  const text = parts.join(' ').replace(/\s+/g, ' ').trim();
+  console.log(`[stt] ✓ seg=${segId} ${audioChunks.length} parts joined in ${Date.now() - sttStart}ms: "${text.slice(0, 200)}"`);
+  const partial = { type: 'partial_transcript', seg_id: segId, text, is_final: true };
+  wsSend(session.ws, partial);
+
+  if (!text) {
+    return; // nothing to feed the model
+  }
+
+  session.transcripts.push(text);
+
+  // Wait deterministically for the previous loop to drain. If it doesn't
+  // resolve within 5s the in-flight loop is wedged — drop this boundary
+  // entirely rather than risk concurrent loops mutating the same history.
+  if (session.loopRunning && session.loopDonePromise) {
+    try {
+      await Promise.race([
+        session.loopDonePromise,
+        new Promise((_, rej) => setTimeout(() => rej(new Error('loop_drain_timeout')), 5000)),
+      ]);
+    } catch (e) {
+      console.warn('[ws] dropping boundary, prior loop did not drain:', e.message);
+      return;
+    }
+  }
+
+  await runSessionLoop(session, source);
+}
+
+async function runSessionLoop(session, source) {
+  if (session.loopRunning) return;
+  session.loopRunning = true;
+  session.loopStartedAt = Date.now();
+
+  // Set the drain promise BEFORE the first await so any boundary that fires
+  // immediately after `loopRunning = true` sees a promise to wait on.
+  let resolveLoopDone;
+  session.loopDonePromise = new Promise((r) => { resolveLoopDone = r; });
+
+  const aborter = new AbortController();
+  session.abortCurrent = () => {
+    try { aborter.abort(); } catch {}
+  };
+
+  const cumulative = session.transcripts.join(' ').trim();
+
+  // Rebuild the system prompt each segment so the model sees fresh DB state
+  // (other tools may have mutated tasks since the session started).
+  let systemPrompt;
+  try {
+    systemPrompt = await buildPromptForSession(session);
+  } catch (e) {
+    console.error('[ws] system prompt build failed:', e.message);
+    wsSend(session.ws, { type: 'error', code: 'PROMPT_BUILD_FAILED', message: e.message });
+    session.loopRunning = false;
+    session.abortCurrent = () => {};
+    resolveLoopDone();
+    return;
+  }
+
+  const emit = (event) => {
+    wsSend(session.ws, event);
+    pushReplay(session, event);
+  };
+
+  try {
+    const result = await runAgentSegment({
+      session,
+      transcript: cumulative,
+      history: session.modelHistory,
+      systemPrompt,
+      signal: aborter.signal,
+      emit,
+    });
+    // Decide whether to drop the raw transcript buffer for this segment.
+    //  - Completed normally (done / no_calls / max_iterations) → drop.
+    //  - Aborted but at least one tool executed → drop. The mutation is
+    //    committed and modelHistory has the user+functionResponse; re-running
+    //    the same transcript would duplicate the work (e.g. add Gym twice).
+    //  - Aborted with NO tools executed → keep so the in-flight new utterance
+    //    can append and re-run as one larger ask. Pop the dangling user
+    //    message we pushed at the top of runAgentSegment so history doesn't
+    //    end up with two consecutive user turns.
+    const aborted = result?.stoppedReason === 'aborted';
+    const toolsExecuted = result?.toolsExecuted ?? 0;
+    if (!aborted || toolsExecuted > 0) {
+      session.transcripts.length = 0;
+    } else if (
+      session.modelHistory.length > 0 &&
+      session.modelHistory[session.modelHistory.length - 1].role === 'user' &&
+      session.modelHistory[session.modelHistory.length - 1].parts?.[0]?.text != null
+    ) {
+      session.modelHistory.pop();
+    }
+  } catch (e) {
+    if (!aborter.signal.aborted) {
+      console.error('[ws] agent loop failed:', e);
+      wsSend(session.ws, { type: 'error', code: 'AGENT_FAILED', message: e.message || 'agent error' });
+    }
+  } finally {
+    session.loopRunning = false;
+    session.abortCurrent = () => {};
+    resolveLoopDone();
+  }
+
+  void source;
+}
+
+async function buildPromptForSession(session) {
+  // Recompute "today" in the user's tz on every loop so a session that spans
+  // midnight tells the model the correct day. session.date stays as the
+  // initial focus date (drives the ±3d task window below).
+  const target_date = new Intl.DateTimeFormat('en-CA', { timeZone: session.tz }).format(new Date());
+  const dateMinus3 = addDays(session.date, -3);
+  const datePlus3 = addDays(session.date, 3);
+  const [profileQ, tasksQ, constraintsQ, inferred] = await Promise.all([
+    session.supa
+      .from('profiles')
+      .select('name, goal, breakfast_time_minutes, lunch_time_minutes, dinner_time_minutes, morning_start_minutes, afternoon_start_minutes, evening_start_minutes')
+      .eq('id', session.userId)
+      .maybeSingle(),
+    session.supa
+      .from('tasks')
+      .select('id, title, date, time_minutes, duration_minutes, repeat_rule, series_id, done')
+      .eq('user_id', session.userId)
+      .gte('date', dateMinus3)
+      .lte('date', datePlus3),
+    session.supa.rpc('get_top_constraints', { p_limit: 50 }),
+    inferRoutineDurations(session.supa, session.userId),
+  ]);
+  session.profile = profileQ.data || session.profile;
+  const tasks = tasksQ.data ?? [];
+  const constraints = constraintsQ.data ?? [];
+  console.log(
+    `[prompt] context: ${tasks.length} tasks (${target_date} ±3d), ${constraints.length} constraints, ${(inferred || []).length} routines`,
+  );
+  return buildSystemPrompt({
+    profile: session.profile,
+    target_date,
+    tasks,
+    constraints,
+    tz: session.tz,
+    inferred,
+    now_minutes: computeNowMinutes(session.tz),
+  });
+}
+
+function onWsConnect(ws, ctx) {
+  const sessionId = `ws:${randomUUID()}`;
+  const session = {
+    sessionId,
+    ws,
+    userId: ctx.user.id,
+    supa: ctx.supabase,
+    profile: null,
+    date: ctx.date,
+    tz: ctx.tz,
+    segId: null,
+
+    audioBuffer: [],
+    audioBufferBytes: 0,
+    transcripts: [],
+    modelHistory: [],
+    loopRunning: false,
+    loopStartedAt: 0,
+    abortCurrent: () => {},
+
+    lastChunkTs: 0,
+    speechStartTs: null,
+    lastUtteranceEndTs: 0,
+    pendingUndo: null,
+
+    closeTimer: null,
+    watchdogTimer: null,
+    longUtterTimer: null,
+    idleTimer: null,
+
+    replay: [], // circular buffer of tool_result events
+  };
+  sessions.set(sessionId, session);
+  console.log(`[ws] session ${sessionId} opened (user=${ctx.user.id} date=${ctx.date} tz=${ctx.tz})`);
+
+  wsSend(ws, { type: 'session_ready', session_id: sessionId });
+  resetIdleTimer(session);
+
+  ws.on('message', (data, isBinary) => {
+    resetIdleTimer(session);
+    handleWsMessage(session, data, isBinary).catch((e) => {
+      console.error('[ws] message handler failed:', e);
+      wsSend(ws, { type: 'error', code: 'INTERNAL', message: e.message || 'internal error' });
+    });
+  });
+
+  ws.on('close', (code, reasonBuf) => {
+    const reason = reasonBuf?.toString?.() || '';
+    console.log(`[ws] session ${sessionId} ws closed (code=${code} reason="${reason}")`);
+    // Detach socket but keep the session alive briefly for reconnect.
+    session.ws = null;
+    if (session.closeTimer) clearTimeout(session.closeTimer);
+    session.closeTimer = setTimeout(() => {
+      teardownSession(sessionId, 'grace_expired');
+    }, SESSION_GRACE_MS);
+  });
+
+  ws.on('error', (e) => {
+    console.error(`[ws] session ${sessionId} ws error:`, e.message);
+  });
+}
+
+async function handleWsMessage(session, data, isBinary) {
+  if (isBinary) {
+    // Audio chunk.
+    const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+    console.log(`[ws] ← audio chunk (${buf.length}B, buffered=${session.audioBufferBytes + buf.length}B)`);
+    // Cap the in-memory audio buffer. If the new chunk would overflow, drop
+    // oldest entries until it fits and notify the client (which will stop on
+    // its own when it sees an error).
+    if (session.audioBufferBytes + buf.length > MAX_AUDIO_BUFFER_BYTES) {
+      let droppedBytes = 0;
+      while (
+        session.audioBuffer.length > 0 &&
+        session.audioBufferBytes + buf.length > MAX_AUDIO_BUFFER_BYTES
+      ) {
+        const oldest = session.audioBuffer.shift();
+        session.audioBufferBytes -= oldest.length;
+        droppedBytes += oldest.length;
+      }
+      if (droppedBytes > 0) {
+        console.warn(`[ws] audio buffer overflow, dropped ${droppedBytes} bytes`);
+        wsSend(session.ws, {
+          type: 'error',
+          code: 'BUFFER_OVERRUN',
+          message: 'Audio buffer overflow',
+        });
+      }
+    }
+    session.audioBuffer.push(buf);
+    session.audioBufferBytes += buf.length;
+    session.lastChunkTs = Date.now();
+    if (session.speechStartTs == null) {
+      session.speechStartTs = session.lastChunkTs;
+      scheduleLongUtterance(session);
+    }
+    scheduleWatchdog(session);
+    return;
+  }
+
+  let cmd;
+  try {
+    cmd = JSON.parse(data.toString('utf8'));
+  } catch {
+    wsSend(session.ws, { type: 'error', code: 'BAD_JSON', message: 'invalid JSON command' });
+    return;
+  }
+  if (!cmd || typeof cmd !== 'object' || !cmd.type) {
+    wsSend(session.ws, { type: 'error', code: 'BAD_CMD', message: 'missing type' });
+    return;
+  }
+  console.log(`[ws] ← cmd ${cmd.type}`, cmd.type === 'resume' ? `(target=${cmd.session_id})` : '');
+
+  switch (cmd.type) {
+    case 'utterance_end':
+      await handleBoundary(session, 'utterance_end');
+      return;
+
+    case 'interrupt':
+      try { session.abortCurrent?.(); } catch {}
+      return;
+
+    case 'client_undo': {
+      const n = Math.max(1, Math.min(20, Number(cmd.n) || 1));
+      const opId = String(cmd.client_op_id || `undo:${randomUUID()}`);
+      if (session.loopRunning) {
+        // Queue for the next iteration of the running loop.
+        session.pendingUndo = { n, client_op_id: opId };
+      } else {
+        // Run synchronously as a one-shot — no model call needed; the executor
+        // applies the undo and we emit tool_call/tool_result directly.
+        if (!session.segId) session.segId = `seg:${randomUUID()}`;
+        const emit = (event) => {
+          wsSend(session.ws, event);
+          pushReplay(session, event);
+        };
+        await invokeAndJournal({
+          session: {
+            supa: session.supa,
+            profile: session.profile,
+            userId: session.userId,
+            sessionId: session.sessionId,
+            segId: session.segId,
+            ws: session.ws,
+          },
+          history: session.modelHistory,
+          emit,
+          call: { id: opId, name: 'undo_last', args: { n } },
+        });
+      }
+      return;
+    }
+
+    case 'cancel_session':
+      teardownSession(session.sessionId, 'cancel_session');
+      try { session.ws?.close(1000, 'cancel_session'); } catch {}
+      return;
+
+    case 'resume': {
+      const targetId = String(cmd.session_id || '');
+      const lastSeen = cmd.last_seen_call_id || null;
+      const target = sessions.get(targetId);
+      if (!target || target.userId !== session.userId) {
+        wsSend(session.ws, {
+          type: 'error',
+          code: 'RESUME_NOT_FOUND',
+          message: 'session not found; treat as new',
+        });
+        return;
+      }
+      if (target.sessionId === session.sessionId) {
+        // No-op — resume against ourselves (replay only).
+      } else {
+        // Transfer the live socket onto the target session and discard the
+        // ephemeral session created by this upgrade.
+        const ws = session.ws;
+        session.ws = null;
+        teardownSession(session.sessionId, 'resume_transfer');
+
+        if (target.closeTimer) { clearTimeout(target.closeTimer); target.closeTimer = null; }
+        target.ws = ws;
+        target.supa = session.supa; // fresh per-request client carries the user JWT
+
+        // Re-wire ws handlers to the target session.
+        ws.removeAllListeners('message');
+        ws.removeAllListeners('close');
+        ws.removeAllListeners('error');
+        ws.on('message', (data, isBinary) => {
+          resetIdleTimer(target);
+          handleWsMessage(target, data, isBinary).catch((e) => {
+            console.error('[ws] message handler failed:', e);
+            wsSend(ws, { type: 'error', code: 'INTERNAL', message: e.message || 'internal error' });
+          });
+        });
+        ws.on('close', (code, reasonBuf) => {
+          const reason = reasonBuf?.toString?.() || '';
+          console.log(`[ws] session ${target.sessionId} ws closed (code=${code} reason="${reason}")`);
+          target.ws = null;
+          if (target.closeTimer) clearTimeout(target.closeTimer);
+          target.closeTimer = setTimeout(() => {
+            teardownSession(target.sessionId, 'grace_expired');
+          }, SESSION_GRACE_MS);
+        });
+        ws.on('error', (e) => {
+          console.error(`[ws] session ${target.sessionId} ws error:`, e.message);
+        });
+        wsSend(target.ws, { type: 'session_ready', session_id: target.sessionId });
+        resetIdleTimer(target);
+      }
+
+      // Replay tool_result events since last_seen_call_id (or all if absent).
+      const idx = lastSeen ? target.replay.findIndex((e) => e.call_id === lastSeen) : -1;
+      const tail = idx >= 0 ? target.replay.slice(idx + 1) : target.replay.slice();
+      for (const ev of tail) wsSend(target.ws, ev);
+      return;
+    }
+
+    default:
+      wsSend(session.ws, { type: 'error', code: 'UNKNOWN_CMD', message: `unknown type ${cmd.type}` });
+  }
+}
+
+const wss = new WebSocketServer({ noServer: true });
+const server = http.createServer(app);
+
+server.on('upgrade', async (req, socket, head) => {
+  let parsed;
+  try {
+    parsed = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  } catch {
+    console.warn('[ws] upgrade rejected (bad url)');
+    socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+  if (parsed.pathname !== '/agent/session') {
+    console.warn(`[ws] upgrade rejected (bad path: ${parsed.pathname})`);
+    socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+  const token = parsed.searchParams.get('token');
+  const date = parsed.searchParams.get('date');
+  const tz = parsed.searchParams.get('tz') || 'UTC';
+  const resumeId = parsed.searchParams.get('resume');
+
+  if (!token || !date || !isYYYYMMDD(date)) {
+    console.warn(`[ws] upgrade rejected (missing/invalid params: token=${!!token} date=${date})`);
+    socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+
+  let auth;
+  try {
+    auth = await requireUserFromToken(token);
+  } catch (e) {
+    console.warn(`[ws] upgrade rejected (auth failed: ${e.message})`);
+    socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+
+  // Resume path: rebind an existing session if it's still in the grace window.
+  if (resumeId && sessions.has(resumeId)) {
+    const existing = sessions.get(resumeId);
+    if (existing.userId !== auth.user.id) {
+      socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      if (existing.closeTimer) { clearTimeout(existing.closeTimer); existing.closeTimer = null; }
+      existing.ws = ws;
+      existing.supa = auth.supabase;
+      console.log(`[ws] session ${resumeId} resumed`);
+      wsSend(ws, { type: 'session_ready', session_id: resumeId });
+      // Replay buffered tool_results.
+      for (const ev of existing.replay) wsSend(ws, ev);
+      resetIdleTimer(existing);
+
+      ws.on('message', (data, isBinary) => {
+        resetIdleTimer(existing);
+        handleWsMessage(existing, data, isBinary).catch((e) => {
+          console.error('[ws] message handler failed:', e);
+          wsSend(ws, { type: 'error', code: 'INTERNAL', message: e.message || 'internal error' });
+        });
+      });
+      ws.on('close', (code, reasonBuf) => {
+        const reason = reasonBuf?.toString?.() || '';
+        console.log(`[ws] session ${resumeId} ws closed (code=${code} reason="${reason}")`);
+        existing.ws = null;
+        if (existing.closeTimer) clearTimeout(existing.closeTimer);
+        existing.closeTimer = setTimeout(() => {
+          teardownSession(resumeId, 'grace_expired');
+        }, SESSION_GRACE_MS);
+      });
+      ws.on('error', (e) => {
+        console.error(`[ws] session ${resumeId} ws error:`, e.message);
+      });
+    });
+    return;
+  }
+
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    onWsConnect(ws, { user: auth.user, supabase: auth.supabase, date, tz });
+  });
+});
+
+// Bind to 0.0.0.0 so the server is reachable from phones on the same LAN
+// (Expo Go on a real device). localhost-only binding would only allow the dev
+// Mac itself to connect.
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`Backend server running on http://0.0.0.0:${PORT}`);
+  console.log(`   - GET  /health           - Health check`);
+  console.log(`   - GET  /proxy-ics?url=…  - ICS calendar proxy`);
+  console.log(`   - POST /plan-day-audio   - Voice/text plan (auth required)`);
+  console.log(`   - POST /transcribe       - Audio → text (auth required)`);
+  console.log(`   - POST /agent/turn       - Agent loop REST harness (auth required)`);
+  console.log(`   - WS   /agent/session    - Agent streaming session (auth required)`);
 });

@@ -29,6 +29,7 @@ import {
   SECTION_ORDER,
   deriveSection,
   expandRepeatDates,
+  formatDurationCompact,
   formatTimeRange,
   type RepeatRule,
   type Task,
@@ -415,15 +416,14 @@ export function DayDetailSheet({ visible, dateKey, onClose }: Props) {
       <TaskRow
         title={item.task.title}
         time={formatTimeRange(item.task.time_minutes, item.task.duration_minutes)}
+        duration={formatDurationCompact(item.task.duration_minutes)}
         done={item.task.done}
-        editing={editing}
+        category={item.task.category}
         isDragging={isActive}
+        disabled={editing}
         onToggle={() => {
           void handleToggleTask(item.task.id);
         }}
-        onDelete={() => confirmDeleteTask(item.task)}
-        onEdit={() => openEdit(item.task.id)}
-        onDragStart={drag}
       />
     );
   };

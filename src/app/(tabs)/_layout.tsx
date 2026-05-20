@@ -1,87 +1,54 @@
-import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { useRouter } from 'expo-router';
-import { Pressable, StyleSheet, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { usePathname } from 'expo-router';
+import { Icon, Label, NativeTabs } from 'expo-router/unstable-native-tabs';
 
-import { FloatingTabBar } from '@/src/components/floating-tab-bar';
-import { IconSymbol } from '@/src/components/ui/icon-symbol';
-import { Colors } from '@/src/constants/theme';
+import { FloatingMic } from '@/src/components/floating-mic';
+import { ThemedView } from '@/src/components/themed-view';
+import { useAgentSessionCtx } from '@/src/features/agent/context/agent-session-context';
 import { useColorScheme } from '@/src/hooks/use-color-scheme';
-import { TodoScreen } from '@/src/features/todo/screens/todo-screen';
-import { CalendarScreen } from '@/src/features/calendar/screens/calendar-screen';
-
-const Tab = createBottomTabNavigator();
-
-function VoiceButton() {
-  const router = useRouter();
-  const scheme = useColorScheme() ?? 'light';
-  const palette = Colors[scheme];
-
-  return (
-    <Pressable
-      onPress={() => router.push('/voice-chat')}
-      style={({ pressed }) => [
-        styles.voiceButton,
-        { backgroundColor: palette.accent },
-        pressed && { opacity: 0.8 },
-      ]}
-      accessibilityRole="button"
-      accessibilityLabel="Voice chat"
-    >
-      <IconSymbol name="microphone.fill" size={24} color={palette.textInverse} />
-    </Pressable>
-  );
-}
 
 export default function TabsLayout() {
+  const pathname = usePathname();
+  // '/' or '/todo' both resolve to the todo tab.
+  const onTodo = pathname === '/' || pathname === '/todo' || pathname.endsWith('/todo');
+
+  const agent = useAgentSessionCtx();
+  const agentActive = agent.phase !== 'idle';
+
+  const scheme = useColorScheme() ?? 'light';
+  const isDark = scheme === 'dark';
+
+  // Tab tints follow the scheme — light text/icons on dark glass, dark on
+  // light.
+  const tabFg = isDark ? '#ECEDEE' : '#0A0A0A';
+  const tabMuted = isDark ? '#7C7D80' : '#7C7C80';
+
+  // During voice mode, hide only the NON-active trigger. The active tab must
+  // stay visible to iOS — otherwise UITabBarController has no focused tab and
+  // renders a blank white screen. TodoScreen stays mounted → scroll + state
+  // preserved.
+  //
+  // ThemedView (not bare View) at the root so the area behind the native tab
+  // bar stays themed during tab-switch animations — otherwise the bar's
+  // sampled background flashes light gray for a frame.
   return (
-    <View style={{ flex: 1 }}>
-      <Tab.Navigator
-        tabBar={(props) => <FloatingTabBar {...props} />}
-        screenOptions={{
-          headerShown: false,
-        }}
+    <ThemedView style={{ flex: 1 }}>
+      <NativeTabs
+        tintColor={tabFg}
+        iconColor={{ default: tabMuted, selected: tabFg }}
+        labelStyle={{ color: tabFg }}
+        minimizeBehavior="never"
       >
-        <Tab.Screen
-          name="todo"
-          component={TodoScreen}
-          options={{
-            title: 'Todo',
-          }}
-        />
-        <Tab.Screen
-          name="calendar"
-          component={CalendarScreen}
-          options={{
-            title: 'Calendar',
-          }}
-        />
-      </Tab.Navigator>
-    </View>
+        <NativeTabs.Trigger name="todo" hidden={agentActive && !onTodo}>
+          <Icon sf="checklist" />
+          <Label hidden>ToDo</Label>
+        </NativeTabs.Trigger>
+        <NativeTabs.Trigger name="calendar" hidden={agentActive && onTodo}>
+          <Icon sf="calendar" />
+          <Label hidden>Calendar</Label>
+        </NativeTabs.Trigger>
+      </NativeTabs>
+
+      {onTodo ? <FloatingMic /> : null}
+    </ThemedView>
   );
 }
-
-const styles = StyleSheet.create({
-  voiceButtonContainer: {
-    position: 'absolute',
-    right: 0,
-    bottom: 0,
-    alignItems: 'flex-end',
-    justifyContent: 'flex-end',
-    paddingRight: 24,
-    paddingBottom: 24,
-    pointerEvents: 'box-none',
-  },
-  voiceButton: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 12,
-    elevation: 8,
-  },
-});

@@ -1,108 +1,120 @@
 'use no memo';
 
-import { Pressable, StyleSheet, View } from 'react-native';
+import { useEffect } from 'react';
+import { StyleSheet, View } from 'react-native';
+import { Pressable } from 'react-native-gesture-handler';
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
+} from 'react-native-reanimated';
 
 import { ThemedText } from '@/src/components/themed-text';
 import { IconSymbol } from '@/src/components/ui/icon-symbol';
 import { Colors } from '@/src/constants/theme';
 import { useColorScheme } from '@/src/hooks/use-color-scheme';
+import type { TaskCategory } from '@/src/types/database';
+import { CategoryDot } from './category-dot';
 
 type Props = {
   title: string;
   time: string;
+  duration: string;
   done: boolean;
-  editing: boolean;
+  category: TaskCategory;
   isDragging?: boolean;
+  disabled?: boolean;
   onToggle: () => void;
-  onDelete: () => void;
-  onEdit: () => void;
-  onDragStart?: () => void;
 };
 
 export function TaskRow({
   title,
   time,
+  duration,
   done,
-  editing,
+  category,
   isDragging,
+  disabled = false,
   onToggle,
-  onDelete,
-  onEdit,
-  onDragStart,
 }: Props) {
   const scheme = useColorScheme() ?? 'light';
   const palette = Colors[scheme];
 
+  const scale = useSharedValue(1);
+  useEffect(() => {
+    scale.value = withTiming(isDragging ? 0.96 : 1, { duration: 160 });
+  }, [isDragging, scale]);
+  const dragStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: scale.value }],
+  }));
+
   return (
-    <Pressable
-      onPress={editing ? undefined : onToggle}
-      onLongPress={editing ? onDragStart : undefined}
-      delayLongPress={250}
-      accessibilityRole={editing ? 'button' : 'checkbox'}
-      accessibilityState={{ checked: done, disabled: editing }}
-      accessibilityLabel={editing ? `Reorder ${title}` : title}
-      style={({ pressed }) => [
-        styles.row,
-        isDragging && [styles.dragging, { backgroundColor: palette.bgSecondary }],
-        pressed && !editing && !isDragging && { opacity: 0.55 },
-      ]}
-    >
-      {editing ? (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={`Delete ${title}`}
-          onPress={onDelete}
-          hitSlop={10}
-          style={({ pressed }) => [styles.iconBox, pressed && { opacity: 0.6 }]}
-        >
-          <IconSymbol name="minus.circle.fill" size={22} color={palette.error} />
-        </Pressable>
-      ) : null}
+    <Animated.View style={dragStyle}>
+      <View
+        style={[
+          styles.row,
+          isDragging && [styles.dragging, { backgroundColor: palette.bgSecondary }],
+        ]}
+      >
+        <CategoryDot category={category} done={done} />
 
-      <View style={styles.body}>
-        <ThemedText
-          type="sen-headline"
-          lightColor={done ? Colors.light.textMuted : Colors.light.text}
-          darkColor={done ? Colors.dark.textMuted : Colors.dark.text}
-          style={[styles.title, done && styles.titleDone]}
-          numberOfLines={2}
-        >
-          {title}
-        </ThemedText>
-        <ThemedText
-          type="sen-caption-medium"
-          lightColor={done ? Colors.light.textDisabled : Colors.light.textMuted}
-          darkColor={done ? Colors.dark.textDisabled : Colors.dark.textMuted}
-        >
-          {time}
-        </ThemedText>
-      </View>
-
-      {editing ? (
-        <View style={styles.actions}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`Edit ${title}`}
-            onPress={onEdit}
-            hitSlop={8}
-            style={({ pressed }) => [styles.actionIcon, pressed && { opacity: 0.6 }]}
+        <View style={styles.body}>
+          <ThemedText
+            type="sen-headline"
+            lightColor={done ? Colors.light.textMuted : Colors.light.text}
+            darkColor={done ? Colors.dark.textMuted : Colors.dark.text}
+            style={[styles.title, done && styles.titleDone]}
+            numberOfLines={2}
           >
-            <IconSymbol name="pencil" size={18} color={palette.text} />
-          </Pressable>
-          <View style={styles.actionIcon}>
-            <IconSymbol name="line.3.horizontal" size={20} color={palette.textMuted} />
+            {title}
+          </ThemedText>
+          <View style={styles.subtitleRow}>
+            <ThemedText
+              type="sen-caption-medium"
+              lightColor={done ? Colors.light.textDisabled : Colors.light.textMuted}
+              darkColor={done ? Colors.dark.textDisabled : Colors.dark.textMuted}
+            >
+              {time}
+            </ThemedText>
+            <ThemedText
+              type="sen-caption-medium"
+              lightColor={done ? Colors.light.textMuted : Colors.light.text}
+              darkColor={done ? Colors.dark.textMuted : Colors.dark.text}
+            >
+              {duration}
+            </ThemedText>
           </View>
         </View>
-      ) : (
-        <View style={styles.iconBox}>
-          <IconSymbol
-            name={done ? 'checkmark.circle.fill' : 'circle'}
-            size={22}
-            color={done ? palette.text : palette.textMuted}
-          />
-        </View>
-      )}
-    </Pressable>
+
+        {disabled ? (
+          <View style={styles.iconBox}>
+            <IconSymbol
+              name={done ? 'checkmark.circle.fill' : 'circle'}
+              size={22}
+              color={done ? palette.text : palette.textMuted}
+            />
+          </View>
+        ) : (
+          <Pressable
+            onPress={onToggle}
+            hitSlop={16}
+            accessibilityRole="checkbox"
+            accessibilityState={{ checked: done }}
+            accessibilityLabel={done ? `Mark ${title} not done` : `Mark ${title} done`}
+            style={({ pressed }) => [
+              styles.iconBox,
+              pressed && { opacity: 0.55 },
+            ]}
+          >
+            <IconSymbol
+              name={done ? 'checkmark.circle.fill' : 'circle'}
+              size={22}
+              color={done ? palette.text : palette.textMuted}
+            />
+          </Pressable>
+        )}
+      </View>
+    </Animated.View>
   );
 }
 
@@ -120,6 +132,7 @@ const styles = StyleSheet.create({
   },
   iconBox: {
     width: 28,
+    height: 28,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -127,19 +140,13 @@ const styles = StyleSheet.create({
     flex: 1,
     gap: 2,
   },
+  subtitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   title: {},
   titleDone: {
     textDecorationLine: 'line-through',
-  },
-  actions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  actionIcon: {
-    width: 32,
-    height: 32,
-    alignItems: 'center',
-    justifyContent: 'center',
   },
 });

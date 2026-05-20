@@ -1,3 +1,7 @@
+import type { TaskCategory } from '@/src/types/database';
+
+export type { TaskCategory };
+
 export type TaskSection = 'morning' | 'afternoon' | 'evening';
 export type RepeatRule = 'none' | 'daily' | 'weekdays' | 'weekly';
 
@@ -14,6 +18,7 @@ export type Task = {
   series_id?: string | null;
   color?: string | null;
   source: 'todo_list' | 'calendar_import';
+  category: TaskCategory;
   created_at: string;
   updated_at: string;
 };
@@ -31,6 +36,20 @@ export const SECTION_LABELS: Record<TaskSection, string> = {
   morning: 'Morning',
   afternoon: 'Afternoon',
   evening: 'Evening',
+};
+
+// Pastel tints applied to each section's header pill, layered over the
+// GlassSurface blur. Alpha kept below 0.6 so the glass effect remains visible.
+export const SECTION_PILL_COLORS: Record<TaskSection, string> = {
+  morning:   'rgba(255, 216, 168, 0.55)', // peach
+  afternoon: 'rgba(186, 230, 253, 0.55)', // sky
+  evening:   'rgba(196, 181, 253, 0.55)', // lavender
+};
+
+export const SECTION_EMPTY_PROMPTS: Record<TaskSection, string> = {
+  morning:   'Start your morning productive',
+  afternoon: 'What needs to get done?',
+  evening:   'End the day strong',
 };
 
 export const REPEAT_LABELS: Record<RepeatRule, string> = {
@@ -104,6 +123,17 @@ export function formatDurationShort(minutes: number): string {
   const h = minutes / 60;
   if (Number.isInteger(h)) return `${h}h`;
   return `${h.toFixed(1).replace('.0', '')}h`;
+}
+
+// Compact human-readable duration: 25m, 1hr, 1hr25m, 2hr.
+// Distinct from `formatDurationShort` which renders fractional hours like "1.5h".
+export function formatDurationCompact(minutes: number): string {
+  if (minutes <= 0) return '0m';
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  if (hours === 0) return `${mins}m`;
+  if (mins === 0) return `${hours}hr`;
+  return `${hours}hr${mins}m`;
 }
 
 export function dateToMinutes(date: Date): number {

@@ -11,20 +11,17 @@ import {
   deleteTask as deleteTaskService,
   deleteTasksBySeriesId,
 } from '../api/tasks';
+import { inferCategory } from '../categorize';
+import type { TaskCategory } from '@/src/types/database';
 import { supabase } from '@/src/backend/supabase';
+import { uuidv4 } from '@/src/lib/uuid';
 
-function uuidv4(): string {
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    const v = c === 'x' ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
-}
-
+// `category` is optional at the API boundary so callers don't have to think
+// about categorization — we infer from the title here if it's omitted.
 type TaskTemplate = Omit<
   Task,
-  'id' | 'date' | 'series_id' | 'user_id' | 'created_at' | 'updated_at'
->;
+  'id' | 'date' | 'series_id' | 'user_id' | 'category' | 'created_at' | 'updated_at'
+> & { category?: TaskCategory };
 
 export type TasksContextValue = {
   tasks: Task[];
@@ -49,6 +46,11 @@ export type TasksContextValue = {
     patch: Partial<Omit<TaskTemplate, 'source'>>
   ) => Promise<void>;
   replaceTasksForDate: (date: string, nextDayTasks: Task[]) => Promise<void>;
+  // Called by the agent client after the backend has already written to Supabase,
+  // so the UI updates in the same frame instead of waiting for the realtime echo.
+  applyServerInsert: (rows: Task[]) => void;
+  applyServerUpdate: (id: string, patch: Partial<Task>) => void;
+  applyServerDelete: (ids: string[]) => void;
 };
 
 const TasksContext = createContext<TasksContextValue | null>(null);
@@ -73,6 +75,7 @@ function toTaskInsert(task: Task) {
     done: task.done,
     color: task.color ?? null,
     source: task.source,
+    category: task.category,
   };
 }
 
@@ -205,7 +208,11 @@ export function TasksProvider({ children }: { children: ReactNode }) {
       addTaskInstance: async (task) => {
         const userId = await requireSession();
 
-        const created = await createTask(userId, task);
+        const withCategory = {
+          ...task,
+          category: task.category ?? inferCategory(task.title),
+        };
+        const created = await createTask(userId, withCategory);
         setTasks((cur) => mergeTask(cur, created));
       },
 
@@ -213,9 +220,13 @@ export function TasksProvider({ children }: { children: ReactNode }) {
         const userId = await requireSession();
 
         const seriesId = uuidv4();
+        const templateWithCategory = {
+          ...template,
+          category: template.category ?? inferCategory(template.title),
+        };
 
         const newTasks = dates.map((date) => ({
-          ...template,
+          ...templateWithCategory,
           date,
           series_id: seriesId,
         }));
@@ -272,7 +283,14 @@ export function TasksProvider({ children }: { children: ReactNode }) {
 
       editTask: async (id, patch) => {
         const userId = await requireSession();
-        const updated = await updateTask(userId, id, patch as any);
+        // Recompute category whenever the title changes so the dot stays in
+        // sync with the user's rename. Skipped when the patch doesn't touch
+        // the title — preserves any manual category override.
+        const finalPatch: Partial<TaskTemplate> =
+          typeof patch.title === 'string'
+            ? { ...patch, category: inferCategory(patch.title) }
+            : patch;
+        const updated = await updateTask(userId, id, finalPatch as any);
         setTasks((cur) => mergeTask(cur, updated));
       },
 
@@ -297,6 +315,31 @@ export function TasksProvider({ children }: { children: ReactNode }) {
         } else {
           setTasks((cur) => cur.filter((t) => t.date !== date));
         }
+      },
+
+      applyServerInsert: (rows) => {
+        if (!rows.length) return;
+        setTasks((cur) => rows.reduce(mergeTask, cur));
+      },
+
+      applyServerUpdate: (id, patch) => {
+        setTasks((cur) =>
+          cur.map((t) =>
+            t.id === id
+              ? {
+                  ...t,
+                  ...patch,
+                  updated_at: patch.updated_at ?? new Date().toISOString(),
+                }
+              : t
+          )
+        );
+      },
+
+      applyServerDelete: (ids) => {
+        if (!ids.length) return;
+        const idSet = new Set(ids);
+        setTasks((cur) => cur.filter((t) => !idSet.has(t.id)));
       },
     }),
     [tasks, loading, session]
