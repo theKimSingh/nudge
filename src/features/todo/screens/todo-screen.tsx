@@ -1,29 +1,36 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Alert, Platform, Pressable, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 
 import { SortableList, type RenderItemArgs } from '../components/sortable-list';
 
 import { ThemedText } from '@/src/components/themed-text';
 import { ThemedView } from '@/src/components/themed-view';
+import { GlassSurface } from '@/src/components/ui/glass-surface';
 import { IconSymbol } from '@/src/components/ui/icon-symbol';
 import { Colors } from '@/src/constants/theme';
 import { useColorScheme } from '@/src/hooks/use-color-scheme';
 import { getProfile } from '@/src/backend/profiles';
 import { useSession } from '@/src/backend/session';
 
-import { AIPlanModal, type PlannedTask } from '../components/ai-plan-modal';
+import { ListeningOverlay } from '@/src/features/agent/components/listening-overlay';
+import { useAgentSessionCtx } from '@/src/features/agent/context/agent-session-context';
+
+import { GhostTaskRow } from '../components/ghost-task-row';
+import { SectionHeader } from '../components/section-header';
+import { SwipeableRow } from '../components/swipeable-row';
 import { TaskFormModal } from '../components/task-form-modal';
 import { TaskRow } from '../components/task-row';
 import { WeeklyCalendar } from '../components/weekly-calendar';
 import { useTasks } from '../context/tasks-context';
 import { rescheduleSection } from '../smart-drop';
 import {
-  SECTION_LABELS,
   SECTION_ORDER,
   dateKey,
   deriveSection,
   expandRepeatDates,
+  formatDurationCompact,
   formatTimeRange,
   type RepeatRule,
   type Task,
@@ -58,11 +65,18 @@ export function TodoScreen() {
     replaceTasksForDate,
   } = useTasks();
   const [name, setName] = useState<string>('there');
-  const [editing, setEditing] = useState(false);
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   const [modalOpen, setModalOpen] = useState(false);
   const [editTaskId, setEditTaskId] = useState<string | null>(null);
-  const [aiOpen, setAiOpen] = useState(false);
+  const [collapsedSections, setCollapsedSections] = useState<
+    Record<TaskSection, boolean>
+  >({ morning: false, afternoon: false, evening: false });
+
+  // Voice mode locks task interactions (checkbox, tap-to-edit, drag, swipe,
+  // add). Scroll, section collapse, and weekly calendar day-tap stay enabled
+  // so the user can still navigate the calendar while planning by voice.
+  const { phase: agentPhase } = useAgentSessionCtx();
+  const voiceMode = agentPhase !== 'idle';
 
   const selectedKey = useMemo(() => dateKey(selectedDate), [selectedDate]);
   const tasks = useMemo(
@@ -90,6 +104,15 @@ export function TodoScreen() {
       evening: [],
     };
     for (const t of tasks) out[deriveSection(t.time_minutes)].push(t);
+    // Sort within each section by start time so the visual order matches
+    // the chronological order. Without this, the diff-update from
+    // replaceTasksForDate preserves task identity (good) but also
+    // preserves the source array's iteration order — which doesn't
+    // reflect a cross-section drag's new time. Sorting reconciles
+    // visual + data after every reorder.
+    for (const sec of SECTION_ORDER) {
+      out[sec].sort((a, b) => a.time_minutes - b.time_minutes);
+    }
     return out;
   }, [tasks]);
 
@@ -150,7 +173,6 @@ export function TodoScreen() {
       duration_minutes: draft.duration_minutes,
       done: false,
       repeat_rule: draft.repeat_rule,
-      source: 'todo_list' as const,
     };
 
     if (draft.repeat_rule === 'none') {
@@ -258,26 +280,13 @@ export function TodoScreen() {
     }
   }
 
-  function applyAIPlan(planned: PlannedTask[]) {
-    for (const t of planned) {
-      addTaskInstance({
-        title: t.title,
-        date: selectedKey,
-        time_minutes: t.time_minutes,
-        duration_minutes: t.duration_minutes,
-        done: false,
-        repeat_rule: 'none',
-        source: 'todo_list',
-      } as any);
-    }
-  }
-
   const editingTask = editTaskId ? tasks.find((t) => t.id === editTaskId) ?? null : null;
 
   const listData = useMemo<ListItem[]>(() => {
     const items: ListItem[] = [];
     for (const section of SECTION_ORDER) {
       items.push({ type: 'header', section, key: `h-${section}` });
+      if (collapsedSections[section]) continue;
       if (grouped[section].length === 0) {
         items.push({ type: 'placeholder', section, key: `p-${section}` });
       } else {
@@ -287,7 +296,7 @@ export function TodoScreen() {
       }
     }
     return items;
-  }, [grouped]);
+  }, [grouped, collapsedSections]);
 
   function handleDragEnd({
     data,
@@ -302,44 +311,47 @@ export function TodoScreen() {
     const droppedItem = data[to];
     if (droppedItem.type !== 'task') return;
 
-    let droppedSection: TaskSection = 'morning';
-    let positionInSection = 0;
-    let currentSection: TaskSection = 'morning';
-    let countInSection = 0;
+    let destSection: TaskSection = 'morning';
+    let posInDest = 0;
+    let cur: TaskSection = 'morning';
+    let countInCur = 0;
     for (let i = 0; i < data.length; i++) {
       const item = data[i];
       if (item.type === 'header') {
-        currentSection = item.section;
-        countInSection = 0;
-      } else if (item.type === 'placeholder') {
-        // ignore placeholders for counting
-      } else {
-        if (i === to) {
-          droppedSection = currentSection;
-          positionInSection = countInSection;
-        }
-        countInSection++;
-      }
-    }
-
-    const groupedNew: Record<TaskSection, Task[]> = {
-      morning: [],
-      afternoon: [],
-      evening: [],
-    };
-    let cs: TaskSection = 'morning';
-    for (const item of data) {
-      if (item.type === 'header') {
-        cs = item.section;
+        cur = item.section;
+        countInCur = 0;
       } else if (item.type === 'task') {
-        groupedNew[cs].push(item.task);
+        if (i === to) {
+          destSection = cur;
+          posInDest = countInCur;
+        }
+        countInCur++;
       }
     }
 
-    groupedNew[droppedSection] = rescheduleSection(
-      groupedNew[droppedSection],
-      droppedSection,
-      positionInSection,
+    // Collapsed-section drops are intentionally append-only: there are no
+    // visible task rows to land "between," and we want the section to stay
+    // collapsed after the drop.
+    if (collapsedSections[destSection]) {
+      posInDest = grouped[destSection].length;
+    }
+
+    // Rebuild on the full grouped map so collapsed-section tasks survive
+    // (only the visible data is in `data`).
+    const groupedNew: Record<TaskSection, Task[]> = {
+      morning: [...grouped.morning],
+      afternoon: [...grouped.afternoon],
+      evening: [...grouped.evening],
+    };
+    const fromSection = deriveSection(droppedItem.task.time_minutes);
+    groupedNew[fromSection] = groupedNew[fromSection].filter(
+      (t) => t.id !== droppedItem.task.id,
+    );
+    groupedNew[destSection].splice(posInDest, 0, droppedItem.task);
+    groupedNew[destSection] = rescheduleSection(
+      groupedNew[destSection],
+      destSection,
+      posInDest,
     );
 
     const next: Task[] = [];
@@ -347,51 +359,62 @@ export function TodoScreen() {
     replaceTasksForDate(selectedKey, next);
   }
 
-  const renderItem = ({ item, drag, isActive }: RenderItemArgs<ListItem>) => {
+  const renderItem = ({ item, isActive }: RenderItemArgs<ListItem>) => {
     if (item.type === 'header') {
       return (
-        <View style={styles.section}>
-          <ThemedText
-            type="sen-caption-bold"
-            lightColor={Colors.light.textMuted}
-            darkColor={Colors.dark.textMuted}
-            style={styles.sectionLabel}
-          >
-            {SECTION_LABELS[item.section].toUpperCase()}
-          </ThemedText>
-        </View>
+        <SectionHeader
+          section={item.section}
+          count={grouped[item.section].length}
+          collapsed={collapsedSections[item.section]}
+          onToggle={() =>
+            setCollapsedSections((c) => ({
+              ...c,
+              [item.section]: !c[item.section],
+            }))
+          }
+        />
       );
     }
     if (item.type === 'placeholder') {
       return (
-        <ThemedText
-          type="sen-body"
-          lightColor={Colors.light.textDisabled}
-          darkColor={Colors.dark.textDisabled}
-          style={styles.sectionEmpty}
+        <Animated.View
+          entering={FadeIn.duration(280)}
+          exiting={FadeOut.duration(280)}
         >
-          Nothing yet
-        </ThemedText>
+          <GhostTaskRow
+            section={item.section}
+            onPress={voiceMode ? () => {} : openAdd}
+          />
+        </Animated.View>
       );
     }
     return (
-      <TaskRow
-        title={item.task.title}
-        time={formatTimeRange(item.task.time_minutes, item.task.duration_minutes)}
-        done={item.task.done}
-        editing={editing}
-        isDragging={isActive}
-        onToggle={() => {
-          void handleToggleTask(item.task.id);
-        }}
-        onDelete={() => confirmDeleteTask(item.task)}
-        onEdit={() => openEdit(item.task.id)}
-        onDragStart={drag}
-      />
+      <Animated.View
+        entering={FadeIn.duration(280)}
+        exiting={FadeOut.duration(280)}
+      >
+        <SwipeableRow
+          onDelete={() => confirmDeleteTask(item.task)}
+          enabled={!isActive && !voiceMode}
+        >
+          <TaskRow
+            title={item.task.title}
+            time={formatTimeRange(item.task.time_minutes, item.task.duration_minutes)}
+            duration={formatDurationCompact(item.task.duration_minutes)}
+            done={item.task.done}
+            category={item.task.category}
+            isDragging={isActive}
+            disabled={voiceMode}
+            onToggle={() => {
+              void handleToggleTask(item.task.id);
+            }}
+          />
+        </SwipeableRow>
+      </Animated.View>
     );
   };
 
-  const canDrag = (item: ListItem) => item.type === 'task';
+  const canDrag = (item: ListItem) => item.type === 'task' && !voiceMode;
 
   const dayLabel = WEEKDAYS[selectedDate.getDay()];
   const dateLabel = `${MONTHS[selectedDate.getMonth()]} ${selectedDate.getDate()}`;
@@ -404,25 +427,14 @@ export function TodoScreen() {
             Hello, {name}
           </ThemedText>
           <View style={styles.actions}>
-            <ActionButton
-              icon="pencil"
-              label={editing ? 'Done editing' : 'Edit'}
-              onPress={() => setEditing((v) => !v)}
-              palette={palette}
-              active={editing}
-            />
-            <ActionButton
-              icon="mic.fill"
-              label="Plan my day with AI"
-              onPress={() => setAiOpen(true)}
-              palette={palette}
-            />
-            <ActionButton
-              icon="plus"
-              label="Add task"
-              onPress={openAdd}
-              palette={palette}
-            />
+            {voiceMode ? null : (
+              <ActionButton
+                icon="plus"
+                label="Add task"
+                onPress={openAdd}
+                palette={palette}
+              />
+            )}
           </View>
         </View>
         <View style={styles.dateRow}>
@@ -469,25 +481,28 @@ export function TodoScreen() {
           onDragEnd={handleDragEnd}
           renderItem={renderItem}
           canDrag={canDrag}
-          activationDistance={editing ? 8 : 1000}
+          onItemTap={(item) => {
+            if (voiceMode) return;
+            if (item.type === 'task') openEdit(item.task.id);
+          }}
+          activationDistance={8}
           contentContainerStyle={styles.scrollContent}
           ListHeaderComponent={listHeader}
         />
       </SafeAreaView>
+
+      <ListeningOverlay />
 
       <TaskFormModal
         visible={modalOpen}
         initialTask={editingTask}
         onClose={closeModal}
         onSave={saveTask}
+        onDelete={
+          editingTask ? () => confirmDeleteTask(editingTask) : undefined
+        }
       />
 
-      <AIPlanModal
-        visible={aiOpen}
-        date={selectedKey}
-        onClose={() => setAiOpen(false)}
-        onPlan={applyAIPlan}
-      />
     </ThemedView>
   );
 }
@@ -505,27 +520,37 @@ function ActionButton({
   palette: typeof Colors.light;
   active?: boolean;
 }) {
+  // Idle: no tintColor so the system Liquid Glass material renders its
+  // natural chrome look, matching the native tab bar. Active (voice mode):
+  // dark tint so the button reads as a distinct "engaged" state.
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      accessibilityState={{ selected: active }}
-      onPress={onPress}
-      hitSlop={6}
-      style={({ pressed }) => [
-        styles.actionButton,
-        {
-          backgroundColor: active ? palette.buttonFill : palette.surface,
-        },
-        pressed && { opacity: 0.7 },
-      ]}
-    >
-      <IconSymbol
-        name={icon}
-        size={18}
-        color={active ? palette.buttonLabel : palette.surfaceText}
-      />
-    </Pressable>
+    <View style={styles.actionButton}>
+      <GlassSurface
+        tint="regular"
+        interactive
+        scheme={active ? 'dark' : 'auto'}
+        tintColor={active ? 'rgba(14,14,16,0.55)' : undefined}
+        style={styles.actionGlass}
+      >
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={label}
+          accessibilityState={{ selected: active }}
+          onPress={onPress}
+          hitSlop={6}
+          style={({ pressed }) => [
+            styles.actionPress,
+            { transform: [{ scale: pressed ? 0.94 : 1 }] },
+          ]}
+        >
+          <IconSymbol
+            name={icon}
+            size={18}
+            color={active ? '#FFFFFF' : palette.surfaceText}
+          />
+        </Pressable>
+      </GlassSurface>
+    </View>
   );
 }
 
@@ -538,7 +563,8 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     paddingTop: 8,
-    paddingBottom: 140,
+    // Room for the native Liquid Glass tab bar + the floating mic FAB above it.
+    paddingBottom: 120,
   },
   header: {
     paddingHorizontal: 24,
@@ -571,18 +597,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 16,
   },
-  section: {
-    paddingTop: 16,
-  },
-  sectionLabel: {
-    paddingHorizontal: 24,
-    paddingBottom: 4,
-    letterSpacing: 0.6,
-  },
-  sectionEmpty: {
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-  },
   actions: {
     flexDirection: 'row',
     gap: 8,
@@ -591,12 +605,22 @@ const styles = StyleSheet.create({
     width: 44,
     height: 44,
     borderRadius: 22,
-    alignItems: 'center',
-    justifyContent: 'center',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.15,
     shadowRadius: 10,
     elevation: 4,
+  },
+  actionGlass: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    overflow: 'hidden',
+  },
+  actionPress: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });

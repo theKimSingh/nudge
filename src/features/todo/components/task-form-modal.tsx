@@ -4,17 +4,21 @@ import {
   Animated,
   Dimensions,
   Easing,
+  Keyboard,
   KeyboardAvoidingView,
+  LayoutAnimation,
   Modal,
   Platform,
   Pressable,
   StyleSheet,
   TextInput,
+  UIManager,
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/src/components/themed-text';
+import { GlassSurface } from '@/src/components/ui/glass-surface';
 import { IconSymbol } from '@/src/components/ui/icon-symbol';
 import { Colors } from '@/src/constants/theme';
 import { useColorScheme } from '@/src/hooks/use-color-scheme';
@@ -49,12 +53,40 @@ type Props = {
   initialTask?: Task | null;
   onClose: () => void;
   onSave: (draft: Draft) => void;
+  onDelete?: () => void;
 };
 
 const REPEAT_OPTIONS: RepeatRule[] = ['none', 'daily', 'weekdays', 'weekly'];
 const DEFAULT_DURATION_MINUTES = 30;
 
 const SCREEN_HEIGHT = Dimensions.get('window').height;
+
+// Android needs an explicit opt-in for LayoutAnimation; iOS has it on by
+// default. Idempotent — safe to call once at module load.
+if (
+  Platform.OS === 'android' &&
+  UIManager.setLayoutAnimationEnabledExperimental
+) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
+
+// One coordinated transition for: the sheet's height change (update), the
+// wheel mounting (create → opacity fade-in), and the wheel unmounting
+// (delete → opacity fade-out). 240ms lands in the same window as iOS's
+// keyboard slide so when the keyboard dismiss and wheel-open happen in the
+// same gesture, all three motions read as one beat.
+const WHEEL_TRANSITION = {
+  duration: 240,
+  update: { type: LayoutAnimation.Types.easeInEaseOut },
+  create: {
+    type: LayoutAnimation.Types.easeInEaseOut,
+    property: LayoutAnimation.Properties.opacity,
+  },
+  delete: {
+    type: LayoutAnimation.Types.easeInEaseOut,
+    property: LayoutAnimation.Properties.opacity,
+  },
+};
 
 function defaultDraft(): Draft {
   const now = new Date();
@@ -66,7 +98,7 @@ function defaultDraft(): Draft {
   };
 }
 
-export function TaskFormModal({ visible, initialTask, onClose, onSave }: Props) {
+export function TaskFormModal({ visible, initialTask, onClose, onSave, onDelete }: Props) {
   const scheme = useColorScheme() ?? 'light';
   const palette = Colors[scheme];
   const insets = useSafeAreaInsets();
@@ -111,8 +143,18 @@ export function TaskFormModal({ visible, initialTask, onClose, onSave }: Props) 
           useNativeDriver: true,
         }),
       ]).start();
-      const t = setTimeout(() => inputRef.current?.focus(), 280);
-      return () => clearTimeout(t);
+
+      // Auto-focus only on the add path; on the edit path the user usually
+      // wants to tweak time/duration without the keyboard covering the
+      // wheel picker. requestAnimationFrame defers focus to the first paint
+      // after mount, so the iOS keyboard animates up in concert with the
+      // modal's translate instead of after it settles.
+      if (!initialTask) {
+        const raf = requestAnimationFrame(() => {
+          inputRef.current?.focus();
+        });
+        return () => cancelAnimationFrame(raf);
+      }
     }
 
     if (!visible && wasVisible) {
@@ -180,19 +222,27 @@ export function TaskFormModal({ visible, initialTask, onClose, onSave }: Props) 
             <ThemedText type="sen-title-2">
               {initialTask ? 'Edit task' : 'New task'}
             </ThemedText>
-            <Pressable
-              onPress={onClose}
-              hitSlop={12}
-              accessibilityRole="button"
-              accessibilityLabel="Close"
-              style={({ pressed }) => [
-                styles.closeButton,
-                { backgroundColor: palette.bgSecondary },
-                pressed && { opacity: 0.6 },
-              ]}
-            >
-              <IconSymbol name="xmark" size={14} color={palette.textMuted} />
-            </Pressable>
+            <View style={styles.closeButton}>
+              <GlassSurface
+                tint="regular"
+                interactive
+                tintColor="rgba(255,255,255,0.55)"
+                style={styles.closeGlass}
+              >
+                <Pressable
+                  onPress={onClose}
+                  hitSlop={6}
+                  accessibilityRole="button"
+                  accessibilityLabel="Close"
+                  style={({ pressed }) => [
+                    styles.closePress,
+                    { transform: [{ scale: pressed ? 0.94 : 1 }] },
+                  ]}
+                >
+                  <IconSymbol name="xmark" size={18} color={palette.surfaceText} />
+                </Pressable>
+              </GlassSurface>
+            </View>
           </View>
 
           <Field label="Task">
@@ -200,6 +250,12 @@ export function TaskFormModal({ visible, initialTask, onClose, onSave }: Props) 
               ref={inputRef}
               value={draft.title}
               onChangeText={(t) => setDraft((d) => ({ ...d, title: t }))}
+              onFocus={() => {
+                if (expandedField !== null) {
+                  LayoutAnimation.configureNext(WHEEL_TRANSITION);
+                }
+                setExpandedField(null);
+              }}
               placeholder="What needs to get done?"
               placeholderTextColor={palette.textMuted}
               style={[
@@ -229,9 +285,11 @@ export function TaskFormModal({ visible, initialTask, onClose, onSave }: Props) 
                 icon="clock"
                 label={formatTimeDisplay(draft.time_minutes)}
                 active={expandedField === 'time'}
-                onPress={() =>
-                  setExpandedField((cur) => (cur === 'time' ? null : 'time'))
-                }
+                onPress={() => {
+                  Keyboard.dismiss();
+                  LayoutAnimation.configureNext(WHEEL_TRANSITION);
+                  setExpandedField((cur) => (cur === 'time' ? null : 'time'));
+                }}
                 palette={palette}
               />
             </View>
@@ -248,11 +306,13 @@ export function TaskFormModal({ visible, initialTask, onClose, onSave }: Props) 
                 icon="clock"
                 label={formatDurationShort(draft.duration_minutes)}
                 active={expandedField === 'duration'}
-                onPress={() =>
+                onPress={() => {
+                  Keyboard.dismiss();
+                  LayoutAnimation.configureNext(WHEEL_TRANSITION);
                   setExpandedField((cur) =>
                     cur === 'duration' ? null : 'duration',
-                  )
-                }
+                  );
+                }}
                 palette={palette}
               />
             </View>
@@ -319,27 +379,75 @@ export function TaskFormModal({ visible, initialTask, onClose, onSave }: Props) 
             />
           </Field>
 
-          <Pressable
-            onPress={handleSave}
-            disabled={!canSave}
-            accessibilityRole="button"
-            accessibilityLabel={initialTask ? 'Save task' : 'Add task'}
-            style={({ pressed }) => [
-              styles.saveButton,
-              {
-                backgroundColor: canSave ? palette.buttonFill : palette.textDisabled,
-                opacity: pressed && canSave ? 0.85 : 1,
-              },
-            ]}
-          >
-            <ThemedText
-              type="sen-headline"
-              lightColor={Colors.light.buttonLabel}
-              darkColor={Colors.dark.buttonLabel}
+          {initialTask && onDelete ? (
+            <View style={styles.buttonRow}>
+              <Pressable
+                onPress={() => {
+                  onDelete();
+                  onClose();
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="Delete task"
+                style={({ pressed }) => [
+                  styles.saveButton,
+                  styles.deleteButton,
+                  {
+                    backgroundColor: palette.bgTertiary,
+                    opacity: pressed ? 0.85 : 1,
+                  },
+                ]}
+              >
+                <IconSymbol name="trash" size={18} color={palette.text} />
+                <ThemedText type="sen-headline" style={styles.deleteLabel}>
+                  Delete
+                </ThemedText>
+              </Pressable>
+              <Pressable
+                onPress={handleSave}
+                disabled={!canSave}
+                accessibilityRole="button"
+                accessibilityLabel="Save task"
+                style={({ pressed }) => [
+                  styles.saveButton,
+                  styles.doneButton,
+                  {
+                    backgroundColor: canSave ? palette.buttonFill : palette.textDisabled,
+                    opacity: pressed && canSave ? 0.85 : 1,
+                  },
+                ]}
+              >
+                <ThemedText
+                  type="sen-headline"
+                  lightColor={Colors.light.buttonLabel}
+                  darkColor={Colors.dark.buttonLabel}
+                >
+                  Done
+                </ThemedText>
+              </Pressable>
+            </View>
+          ) : (
+            <Pressable
+              onPress={handleSave}
+              disabled={!canSave}
+              accessibilityRole="button"
+              accessibilityLabel={initialTask ? 'Save task' : 'Add task'}
+              style={({ pressed }) => [
+                styles.saveButton,
+                {
+                  backgroundColor: canSave ? palette.buttonFill : palette.textDisabled,
+                  opacity: pressed && canSave ? 0.85 : 1,
+                },
+              ]}
             >
-              {initialTask ? 'Save' : 'Add task'}
-            </ThemedText>
-          </Pressable>
+              <ThemedText
+                type="sen-headline"
+                lightColor={Colors.light.buttonLabel}
+                darkColor={Colors.dark.buttonLabel}
+              >
+                {initialTask ? 'Save' : 'Add task'}
+              </ThemedText>
+            </Pressable>
+          )}
         </Animated.View>
       </KeyboardAvoidingView>
     </Modal>
@@ -536,9 +644,24 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   closeButton: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 10,
+    elevation: 4,
+  },
+  closeGlass: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    overflow: 'hidden',
+  },
+  closePress: {
+    width: 44,
+    height: 44,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -632,5 +755,23 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     minHeight: 52,
     marginTop: 4,
+  },
+  buttonRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 4,
+  },
+  deleteButton: {
+    flex: 1,
+    marginTop: 0,
+    flexDirection: 'row',
+    gap: 8,
+  },
+  deleteLabel: {
+    // Inherit palette.text via ThemedText default
+  },
+  doneButton: {
+    flex: 1,
+    marginTop: 0,
   },
 });

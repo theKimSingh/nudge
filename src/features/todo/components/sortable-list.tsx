@@ -16,6 +16,7 @@ import {
 } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
+  Easing,
   cancelAnimation,
   runOnJS,
   scrollTo,
@@ -44,6 +45,10 @@ export type SortableListProps<T> = {
   canDrag?: (item: T) => boolean;
   /** How far the finger must travel before drag activates. Use a huge number to disable. */
   activationDistance?: number;
+  /** Fires on a quick tap (<8px movement) when long-press drag did NOT win.
+   *  Composed at the row level via Gesture.Exclusive so a long-press hold
+   *  starts drag and suppresses the tap automatically. */
+  onItemTap?: (item: T, index: number) => void;
   ListHeaderComponent?: React.ReactElement;
   contentContainerStyle?: StyleProp<ViewStyle>;
 };
@@ -92,6 +97,7 @@ type RowProps<T> = {
   onActivate: (index: number) => void;
   onMove: (translation: number, absoluteY: number) => void;
   onRelease: () => void;
+  onItemTap?: (item: T, index: number) => void;
   renderItem: (args: RenderItemArgs<T>) => React.ReactElement;
 };
 
@@ -108,6 +114,7 @@ function Row<T>(props: RowProps<T>) {
     onActivate,
     onMove,
     onRelease,
+    onItemTap,
     renderItem,
   } = props;
 
@@ -115,6 +122,7 @@ function Row<T>(props: RowProps<T>) {
   const height = useSharedValue<number>(DEFAULT_ROW_HEIGHT);
   const baseY = useSharedValue<number>(0);
   const visualY = useSharedValue<number>(0);
+  const rowWidth = useSharedValue<number>(0);
 
   // Register / unregister with the parent's lookup.
   useEffect(() => {
@@ -136,10 +144,12 @@ function Row<T>(props: RowProps<T>) {
   const handleLayout = useCallback(
     (e: LayoutChangeEvent) => {
       const h = e.nativeEvent.layout.height;
+      const w = e.nativeEvent.layout.width;
       if (height.value !== h) height.value = h;
+      rowWidth.value = w;
       onMeasured(itemKey, h);
     },
-    [height, itemKey, onMeasured],
+    [height, itemKey, onMeasured, rowWidth],
   );
 
   const triggerDrag = useCallback(() => {
@@ -182,8 +192,34 @@ function Row<T>(props: RowProps<T>) {
       });
   }, [activationDistance, draggable, index, onActivate, onMove, onRelease]);
 
+  const tap = useMemo(() => {
+    return Gesture.Tap()
+      .maxDistance(8)
+      .enabled(!!onItemTap)
+      .onEnd((event, success) => {
+        'worklet';
+        if (!success || !onItemTap) return;
+        // The TaskRow's check button lives at the row's right edge — a
+        // 28px icon with hitSlop=16 sitting inside the row's 24px right
+        // padding. Touches in that zone are handled by the check
+        // Pressable's own NativeButton, but gesture-handler still fires
+        // the outer Tap simultaneously. Skip those so the check toggle
+        // doesn't also open the edit modal.
+        const CHECK_ZONE_WIDTH = 70;
+        if (event.x > rowWidth.value - CHECK_ZONE_WIDTH) return;
+        runOnJS(onItemTap)(item, index);
+      });
+  }, [item, index, onItemTap, rowWidth]);
+
+  // Exclusive: pan has priority. If pan reaches its long-press threshold
+  // (250ms hold), tap is forced to fail. Quick releases activate tap.
+  const composed = useMemo(
+    () => Gesture.Exclusive(pan, tap),
+    [pan, tap],
+  );
+
   return (
-    <GestureDetector gesture={pan}>
+    <GestureDetector gesture={composed}>
       <Animated.View
         onLayout={handleLayout}
         style={[styles.row, animatedStyle]}
@@ -202,6 +238,7 @@ export function SortableList<T>(props: SortableListProps<T>) {
     onDragEnd,
     canDrag,
     activationDistance = 0,
+    onItemTap,
     ListHeaderComponent,
     contentContainerStyle,
   } = props;
@@ -275,6 +312,12 @@ export function SortableList<T>(props: SortableListProps<T>) {
   // closure binding is initialized when the reaction's worklet first runs).
   const rowSVMap = useSharedValue<Record<string, RowSV>>({});
 
+  // Tracks which keys have been seen before so first-time rows can snap
+  // directly to their resting Y instead of sliding from translateY=0 (top of
+  // the list). Without this, a newly mounted row in `evening` visibly streaks
+  // from the morning header down to its slot.
+  const prevKeysRef = useRef<Set<string>>(new Set());
+
   // Update baseY for each row when positions change and no drag is active.
   useEffect(() => {
     if (draggedKey.value !== null) return;
@@ -283,9 +326,40 @@ export function SortableList<T>(props: SortableListProps<T>) {
       if (!sv) continue;
       const target = positions.map[k] ?? 0;
       sv.baseY.value = target;
-      sv.visualY.value = withTiming(target, { duration: 180 });
+      if (!prevKeysRef.current.has(k)) {
+        sv.visualY.value = target;
+      } else {
+        sv.visualY.value = withTiming(target, {
+          duration: 280,
+          easing: Easing.bezier(0.4, 0, 0.2, 1),
+        });
+      }
     }
+    prevKeysRef.current = new Set(keys);
   }, [positions, keys, draggedKey]);
+
+  // If `canDrag` flips such that the currently-dragged item is no longer
+  // draggable (e.g. voice mode just turned on while the user was mid-drag),
+  // cancel the drag and snap rows back to their slot positions. Without this
+  // the dragged row stays floating mid-screen until the next gesture.
+  useEffect(() => {
+    if (!canDrag) return;
+    const key = draggedKey.value;
+    if (key == null) return;
+    const idx = keys.indexOf(key);
+    if (idx < 0) return;
+    const item = data[idx];
+    if (canDrag(item)) return;
+    draggedKey.value = null;
+    fromIndex.value = -1;
+    toIndex.value = -1;
+    panTranslation.value = 0;
+    for (const k of keys) {
+      const sv = registryRef.current.get(k);
+      if (!sv) continue;
+      sv.visualY.value = withSpring(sv.baseY.value, SPRING_CONFIG);
+    }
+  }, [canDrag, data, keys, draggedKey, fromIndex, toIndex, panTranslation]);
 
   // Reaction: while dragging, place the dragged row under the finger and
   // shift other rows out of the way by recomputing their target Y from a
@@ -304,7 +378,19 @@ export function SortableList<T>(props: SortableListProps<T>) {
       if (!cur.key || cur.from < 0) return;
 
       const draggedH = cur.heights[cur.key] ?? DEFAULT_ROW_HEIGHT;
-      const draggedTop = cur.origin + cur.translation;
+      // Clamp the dragged row to the list's vertical bounds so it can't
+      // float above the section headers into the WeeklyCalendar area
+      // (or below the last row into the tab-bar). The lower bound is
+      // the bottom edge of the first item (the topmost section header
+      // in our use case), so the dragged row can't visually overlap or
+      // pass above the Morning pill.
+      let totalH = 0;
+      for (const k of cur.keys) totalH += cur.heights[k] ?? DEFAULT_ROW_HEIGHT;
+      const firstKey = cur.keys[0];
+      const minTop = firstKey ? (cur.heights[firstKey] ?? 0) : 0;
+      const maxTop = Math.max(minTop, totalH - draggedH);
+      const rawTop = cur.origin + cur.translation;
+      const draggedTop = Math.max(minTop, Math.min(rawTop, maxTop));
       const draggedCenter = draggedTop + draggedH / 2;
       const n = cur.keys.length;
 
@@ -547,6 +633,7 @@ export function SortableList<T>(props: SortableListProps<T>) {
               onActivate={handleActivate}
               onMove={handleMove}
               onRelease={handleRelease}
+              onItemTap={onItemTap}
               renderItem={renderItem}
             />
           );
