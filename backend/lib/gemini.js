@@ -169,11 +169,13 @@ async function transcribe({ audioBase64, mimeType }) {
 }
 
 async function runAgentTurn({ history, systemPrompt, signal }) {
-  // The @google/genai v2 SDK accepts AbortSignal via `config.abortSignal`; the
-  // previous second-arg `{ signal }` was silently ignored. Use the streaming
-  // API so abort takes effect mid-response instead of only after the full
-  // generation arrives.
-  const stream = await ai.models.generateContentStream({
+  // Non-streaming: more reliable function-call extraction across SDK minor
+  // versions. We previously used generateContentStream, but in @google/genai
+  // 2.4 the streamed chunks' `functionCalls` accessor sometimes returned
+  // empty even when the final response contained valid function calls,
+  // producing "0 calls" rounds that broke the agent loop. Abort still works
+  // via `config.abortSignal`.
+  const result = await ai.models.generateContent({
     model: 'gemini-2.5-flash',
     contents: history,
     config: {
@@ -185,27 +187,26 @@ async function runAgentTurn({ history, systemPrompt, signal }) {
     },
   });
 
-  const calls = [];
-  const textParts = [];
-  for await (const chunk of stream) {
-    if (process.env.LOG_AGENT_TURN === '1') {
-      console.log('[runAgentTurn] chunk', { functionCalls: chunk.functionCalls?.length || 0 });
-    }
-    if (Array.isArray(chunk.functionCalls) && chunk.functionCalls.length) {
-      calls.push(...chunk.functionCalls);
-    }
-    const t = chunk.text;
-    if (t) textParts.push(t);
+  // SDK exposes `functionCalls` as a getter on the response (filters parts
+  // that carry a functionCall). Falls back to walking candidate parts so we
+  // still work if the getter shape shifts in a future minor.
+  let calls = Array.isArray(result.functionCalls) ? result.functionCalls : [];
+  if (!calls.length) {
+    const parts = result.candidates?.[0]?.content?.parts ?? [];
+    calls = parts
+      .map((p) => p.functionCall)
+      .filter((fc) => fc && typeof fc === 'object' && fc.name);
   }
+  const text = typeof result.text === 'string' ? result.text : '';
 
   const modelContent = {
     role: 'model',
     parts: calls.length
       ? calls.map((c) => ({ functionCall: c }))
-      : [{ text: textParts.join('') }],
+      : [{ text }],
   };
   if (!calls.length) {
-    console.log(`[runAgentTurn] 0 calls; model text: "${textParts.join('').slice(0, 400)}"`);
+    console.log(`[runAgentTurn] 0 calls; model text: "${text.slice(0, 400)}"`);
   }
   return { functionCalls: calls, modelContent };
 }
