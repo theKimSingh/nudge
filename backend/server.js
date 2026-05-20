@@ -41,9 +41,10 @@ app.post('/plan-day', async (req, res) => {
     const systemPrompt = `You are a helpful assistant that extracts event details. 
     Today's date is ${date} and the user's timezone is ${timezone}. 
     Extract event details from the user's text. Keep the end of the event at 1 hour after beginning unless otherwise specified.
-    You MUST respond with a strict JSON object containing ONLY these keys: 
-    "summary", "begin" (ISO 8601 format), "end" (ISO 8601 format), "description", "location". 
-    If a field is missing or unknown, use null. Output your response strictly as a raw JSON object. Do NOT wrap it in markdown code blocks (\`\`\`json), and do not output any other text.`;
+    You MUST respond with a list of JSON objects containing ONLY these keys: 
+    "id", "summary", "begin" (ISO 8601 format), "duration" (integer minutes), "repeats" ("daily", "weekdays", "weekly", or null)
+    If a field is missing or unknown, use null. Output your response strictly as a raw JSON object, there may be multiple events.
+     Do NOT wrap it in markdown code blocks (\`\`\`json), and do not output any other text.`;
 
     // // Make the call to the local model
     // const response = await localAI.chat.completions.create({
@@ -62,7 +63,7 @@ app.post('/plan-day', async (req, res) => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'gemma4:e4b',
+        model: 'llama3.2:1b',
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: text }
@@ -78,9 +79,6 @@ app.post('/plan-day', async (req, res) => {
     });
 
     const data = await response.json();
-    console.log("Raw Ollama Response Payload:", data);
-    console.log("Extracted Content:", data.message.content);
-
     const content = data.message.content;
     console.log("Local Qwen response:", content);
 
@@ -89,10 +87,9 @@ app.post('/plan-day', async (req, res) => {
     }
 
     const extractedData = JSON.parse(content);
-    
+    console.log("Parsed JSON data:", extractedData);
     // Keeping your exact original response structure intact for your frontend
-    res.json({ tasks: Array.of(extractedData) });
-
+    res.json(Array.isArray(extractedData) ? extractedData : [extractedData]);
   } catch (error) {
     console.error('Plan day error:', error);
     res.status(500).json({ error: error.message });
