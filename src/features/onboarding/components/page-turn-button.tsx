@@ -44,8 +44,10 @@ export function PageTurnButton({ label, onPress, disabled = false }: Props) {
 const styles = StyleSheet.create({
   button: {
     width: 150,
-    paddingTop: 32,
-    paddingBottom: 54,
+    // paddingTop: 32,
+    // paddingBottom: 54,
+    height: 80,                // FIX: Set an explicit, predictable height
+    justifyContent: 'center', 
     alignItems: 'center',
     borderTopLeftRadius: 24,
     shadowOffset: { width: -2, height: -4 },

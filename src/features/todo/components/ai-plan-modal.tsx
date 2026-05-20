@@ -19,12 +19,15 @@ import { ThemedText } from '@/src/components/themed-text';
 import { IconSymbol } from '@/src/components/ui/icon-symbol';
 import { Colors } from '@/src/constants/theme';
 import { useColorScheme } from '@/src/hooks/use-color-scheme';
+import { dateKey } from '../types';
 
-export type PlannedTask = {
+export interface PlannedTask {
   title: string;
   time_minutes: number;
+  day: string; // YYYY-MM-DD
   duration_minutes: number;
-};
+  repeats: 'daily' | 'weekdays' | 'weekly' | null;
+}
 
 type Props = {
   visible: boolean;
@@ -119,30 +122,41 @@ export function AIPlanModal({ visible, date, onClose, onPlan }: Props) {
         throw new Error(`Backend error ${res.status}: ${detail}`);
       }
       const data = await res.json();
-      const rawTasks: any[] = Array.isArray(data?.tasks) ? data.tasks : [];
-
+      const rawTasks: any[] = Array.isArray(data) ? data : [];
+      
       const planned: PlannedTask[] = rawTasks
-        .map((t): PlannedTask | null => { // <--- Explicitly define the return type here
+        .map((t): PlannedTask | null => { 
           const startStr = String(t.begin ?? '');
           const dt = new Date(startStr);
+          const dateString = dateKey(dt);
           
           if (Number.isNaN(dt.getTime())) return null;
 
           const timeMinutes = dt.getHours() * 60 + dt.getMinutes();
           
-          let durationMinutes = 30;
-          if (t.end) {
-            const endDt = new Date(t.end);
-            if (!Number.isNaN(endDt.getTime())) {
-              durationMinutes = Math.round((endDt.getTime() - dt.getTime()) / 60000);
+          // Default to 60 minutes if t.duration is missing, as specified in your system prompt
+          let durationMinutes = 60; 
+          
+          if (t.duration) {
+            const parsedDuration = parseInt(String(t.duration), 10);
+            if (!Number.isNaN(parsedDuration)) {
+              durationMinutes = parsedDuration;
             }
           }
 
-          // Returning a complete PlannedTask object
+          // Safely parse repeats value to match your type constraints
+          let repeatsValue: 'daily' | 'weekdays' | 'weekly' | null = null;
+          if (['daily', 'weekdays', 'weekly'].includes(String(t.repeats))) {
+            repeatsValue = t.repeats as 'daily' | 'weekdays' | 'weekly';
+          }
+
+          // Returning a complete PlannedTask object with ID and Repeats
           return {
-            title: String(t.summary || 'Task').trim(),
+            title: String(t.summary || 'Untitled Event').trim(),
             time_minutes: timeMinutes,
-            duration_minutes: Math.max(5, durationMinutes)
+            day: dateString,
+            duration_minutes: Math.max(5, Math.round(durationMinutes)),
+            repeats: repeatsValue
           };
         })
         .filter((t): t is PlannedTask => t !== null);

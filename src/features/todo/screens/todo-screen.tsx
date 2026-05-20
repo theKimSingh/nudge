@@ -259,16 +259,46 @@ export function TodoScreen() {
   }
 
   function applyAIPlan(planned: PlannedTask[]) {
+//     interface PlannedTask {
+//   title: string;
+//   time_minutes: number;
+//   duration_minutes: number;
+//   id: number | null;
+//   repeats: 'daily' | 'weekdays' | 'weekly' | null;
+// }
     for (const t of planned) {
-      addTaskInstance({
+      let repeatRule: 'none' | 'daily' | 'weekdays' | 'weekly' = 'none';
+      if (t.repeats === 'daily' || t.repeats === 'weekdays' || t.repeats === 'weekly') {
+        repeatRule = t.repeats;
+      }
+
+      const template = {
         title: t.title,
-        date: selectedKey,
         time_minutes: t.time_minutes,
         duration_minutes: t.duration_minutes,
         done: false,
-        repeat_rule: 'none',
-        source: 'todo_list',
-      } as any);
+        repeat_rule: repeatRule,
+        source: 'todo_list' as const,
+      };
+
+
+      if (repeatRule === 'none') {
+        // addTaskInstance({
+        //   title: t.title,
+        //   date: selectedKey,
+        //   time_minutes: t.time_minutes,
+        //   duration_minutes: t.duration_minutes,
+        //   done: false,
+        //   repeat_rule: repeatRule,
+        //   source: 'todo_list',
+        // } as any);
+        addTaskInstance({ ...template, date: t.day });
+      } else {
+        const dates = expandRepeatDates(t.day, repeatRule);
+        addTaskSeries(template, dates);
+      }
+
+      
     }
   }
 
