@@ -6,20 +6,20 @@
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/src/assets/models"
-BASE="https://huggingface.co/software-mansion/react-native-executorch-whisper-tiny-quantized.en/resolve/v0.8.0"
+BASE="https://huggingface.co/software-mansion/react-native-executorch-whisper-base-quantized.en/resolve/v0.8.0"
 
 mkdir -p "$DIR"
 
-if [ ! -f "$DIR/whisper-tiny-en-q.pte" ]; then
-  echo "Downloading model (~168MB)…"
-  curl -fL "$BASE/xnnpack/whisper_tiny_en_quantized_xnnpack.pte" -o "$DIR/whisper-tiny-en-q.pte"
+if [ ! -f "$DIR/whisper-base-en-q.pte" ]; then
+  echo "Downloading model (~236MB)…"
+  curl -fL "$BASE/xnnpack/whisper_base_en_quantized_xnnpack.pte" -o "$DIR/whisper-base-en-q.pte"
 else
   echo "Model already present, skipping."
 fi
 
-if [ ! -f "$DIR/whisper-tiny-en-q-tokenizer.bin" ]; then
+if [ ! -f "$DIR/whisper-base-en-q-tokenizer.bin" ]; then
   echo "Downloading tokenizer (~2MB)…"
-  curl -fL "$BASE/tokenizer.json" -o "$DIR/whisper-tiny-en-q-tokenizer.bin"
+  curl -fL "$BASE/tokenizer.json" -o "$DIR/whisper-base-en-q-tokenizer.bin"
 else
   echo "Tokenizer already present, skipping."
 fi

@@ -11,7 +11,7 @@
 
 import { useSpeechToText, type SpeechToTextType } from 'react-native-executorch';
 
-// Bundled Whisper Tiny EN Quantized — the model + tokenizer ship inside the
+// Bundled Whisper Base EN Quantized — the model + tokenizer ship inside the
 // app instead of downloading from HuggingFace on first launch. require()
 // returns a Metro asset id which the Expo ResourceFetcher resolves to a local
 // file URI (Asset.fromModule). The tokenizer keeps a `.bin` extension so Metro
@@ -19,17 +19,21 @@ import { useSpeechToText, type SpeechToTextType } from 'react-native-executorch'
 // and inlined into the bundle); the native HF tokenizer reads it as JSON by
 // content regardless of filename.
 //
-// Files live in src/assets/models/ and are gitignored (168MB). Run
-// `npm run fetch-model` after a fresh clone. See scripts/fetch-whisper-model.sh.
-const WHISPER_TINY_EN_QUANTIZED_BUNDLED = {
-  modelName: 'whisper-tiny-en-quantized' as const,
+// Base (74M params, ~236MB .pte) over Tiny (39M, ~168MB): materially better on
+// numbers ("4pm") and leading words, which Tiny consistently mangled. Still
+// streams the same way at ~similar latency on modern phones.
+//
+// Files live in src/assets/models/ and are gitignored. Run `npm run
+// fetch-model` after a fresh clone. See scripts/fetch-whisper-model.sh.
+const WHISPER_BASE_EN_QUANTIZED_BUNDLED = {
+  modelName: 'whisper-base-en-quantized' as const,
   isMultilingual: false as const,
-  modelSource: require('@/src/assets/models/whisper-tiny-en-q.pte'),
-  tokenizerSource: require('@/src/assets/models/whisper-tiny-en-q-tokenizer.bin'),
+  modelSource: require('@/src/assets/models/whisper-base-en-q.pte'),
+  tokenizerSource: require('@/src/assets/models/whisper-base-en-q-tokenizer.bin'),
 };
 
 export function useWhisperStream(): SpeechToTextType {
-  return useSpeechToText({ model: WHISPER_TINY_EN_QUANTIZED_BUNDLED });
+  return useSpeechToText({ model: WHISPER_BASE_EN_QUANTIZED_BUNDLED });
 }
 
 // Phrases the model sometimes returns as a literal compliance response when
