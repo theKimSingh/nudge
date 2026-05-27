@@ -12,4 +12,6 @@ config.resolver.assetExts = config.resolver.assetExts.filter(
 
 config.resolver.sourceExts.push('svg');
 
+config.resolver.assetExts.push('pte', 'bin');
+
 module.exports = config;

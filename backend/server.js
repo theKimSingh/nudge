@@ -10,7 +10,7 @@ const { WebSocketServer } = require('ws');
 require('dotenv').config({ path: path.resolve(__dirname, '..', '.env') });
 
 const { requireUser, requireUserFromToken } = require('./lib/supabase');
-const { plan, transcribe, runAgentTurn } = require('./lib/gemini');
+const { plan, runAgentTurn } = require('./lib/gemini');
 const { buildSystemPrompt } = require('./lib/prompt');
 const { expandRepeatDates, resolveConflict } = require('./lib/repeat');
 const { executeTool } = require('./lib/executor');
@@ -45,10 +45,10 @@ const PORT = 8000;
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
 if (!process.env.GEMINI_API_KEY) {
-  console.warn('[nudge-backend] GEMINI_API_KEY not set — /plan-day-audio will fail until it is configured in .env');
+  console.warn('[nudge-backend] GEMINI_API_KEY not set — agent loop will fail until it is configured in .env');
 }
 if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-  console.warn('[nudge-backend] SUPABASE_URL / SUPABASE_ANON_KEY (or EXPO_PUBLIC_* equivalents) not set — /plan-day-audio will fail');
+  console.warn('[nudge-backend] SUPABASE_URL / SUPABASE_ANON_KEY (or EXPO_PUBLIC_* equivalents) not set — agent session will fail');
 }
 
 app.use(cors());
@@ -81,359 +81,16 @@ app.get('/proxy-ics', async (req, res) => {
   }
 });
 
-const LRU_TTL_MS = 5 * 60 * 1000;
-const idempotencyCache = new Map();
-
 function addDays(yyyyMmDd, n) {
   const d = new Date(`${yyyyMmDd}T00:00:00Z`);
   d.setUTCDate(d.getUTCDate() + n);
   return d.toISOString().slice(0, 10);
 }
 
-const ALLOWED_AUDIO_MIMES = [
-  'audio/aac',
-  'audio/m4a',
-  'audio/mp4',
-  'audio/wav',
-  'audio/webm',
-  'audio/ogg',
-  'audio/mpeg',
-  'audio/flac',
-];
+// The audio-bearing REST endpoints (/plan-day-audio, /transcribe) were
+// removed when voice input moved to on-device streaming ASR in the agent
+// session WS. Nothing in the app calls them anymore.
 
-app.post('/plan-day-audio', async (req, res) => {
-  try {
-    const { user, supabase } = await requireUser(req);
-    const { audio_base64, mime_type, date, text, request_id } = req.body || {};
-
-    if (!date) return res.status(400).json({ error: 'date is required' });
-    if (!request_id) return res.status(400).json({ error: 'request_id is required' });
-    if (!audio_base64 && !text) return res.status(400).json({ error: 'audio or text required' });
-    if (audio_base64 && audio_base64.length > 7 * 1024 * 1024) {
-      return res.status(400).json({ error: 'audio too large (max ~5MB decoded)' });
-    }
-    if (audio_base64 && mime_type && !ALLOWED_AUDIO_MIMES.includes(mime_type)) {
-      return res.status(400).json({ error: 'unsupported mime_type' });
-    }
-
-    // Per-process idempotency. v2: replace with Redis when running multiple replicas.
-    const idKey = `${user.id}:${request_id}`;
-    const cached = idempotencyCache.get(idKey);
-    if (cached && Date.now() - cached.ts < LRU_TTL_MS) {
-      return res.json(cached.response);
-    }
-
-    const dateMinus3 = addDays(date, -3);
-    const datePlus3 = addDays(date, 3);
-
-    const [profileQ, tasksQ, constraintsQ] = await Promise.all([
-      supabase.from('profiles').select('name, goal').eq('id', user.id).maybeSingle(),
-      supabase
-        .from('tasks')
-        .select('id, title, date, time_minutes, duration_minutes, repeat_rule, series_id, done')
-        .eq('user_id', user.id)
-        .gte('date', dateMinus3)
-        .lte('date', datePlus3),
-      supabase.rpc('get_top_constraints', { p_limit: 50 }),
-    ]);
-
-    const systemPrompt = buildSystemPrompt({
-      profile: profileQ.data,
-      target_date: date,
-      tasks: tasksQ.data ?? [],
-      constraints: constraintsQ.data ?? [],
-      tz: req.headers['x-timezone'] || 'UTC',
-    });
-
-    let planJson;
-    try {
-      planJson = await plan({
-        audioBase64: audio_base64,
-        mimeType: mime_type || 'audio/aac',
-        userText: text,
-        systemPrompt,
-      });
-    } catch (e) {
-      console.error('Gemini call failed:', e.message, e.finishReason || '', e.partial || '');
-      return res.status(502).json({ error: 'AI response invalid', code: 'GEMINI_PARSE_ERROR' });
-    }
-
-    const allTasks = tasksQ.data ?? [];
-    const tasksById = new Map(allTasks.map((t) => [t.id, t]));
-    const ops = (planJson.operations ?? []).filter((op) => {
-      if (op.op_type === 'create') return !!op.title;
-      if (op.op_type === 'update' || op.op_type === 'delete') {
-        return !!op.task_id && tasksById.has(op.task_id);
-      }
-      return false;
-    });
-
-    let created = 0;
-    let updated = 0;
-    let deleted = 0;
-
-    // Tracks newly inserted rows so back-to-back ops in the same batch
-    // (e.g. AI creates two events in one turn) still see each other for
-    // conflict resolution.
-    const pendingTasks = [];
-
-    for (const op of ops) {
-      if (op.op_type === 'create') {
-        const startDate = isYYYYMMDD(op.date) ? op.date : date;
-        const rule = pickRule(op.repeat_rule);
-        const duration = clampDuration(op.duration_minutes);
-        const desired = clampTime(op.time_minutes);
-        const adjusted = resolveConflict(
-          desired,
-          duration,
-          startDate,
-          allTasks.concat(pendingTasks),
-        );
-
-        const baseRow = {
-          user_id: user.id,
-          title: String(op.title).slice(0, 200),
-          time_minutes: adjusted,
-          duration_minutes: duration,
-          repeat_rule: rule,
-          done: false,
-          category: inferCategory(op.title),
-        };
-
-        if (rule === 'none') {
-          const row = { ...baseRow, date: startDate };
-          const { data: ins, error } = await supabase.from('tasks').insert(row).select('id');
-          if (error) {
-            console.error('insert task failed:', error.message);
-          } else {
-            created += ins?.length ?? 0;
-            if (ins?.[0]) pendingTasks.push({ ...row, id: ins[0].id });
-          }
-        } else {
-          const seriesId = randomUUID();
-          const dates = expandRepeatDates(startDate, rule);
-          const rows = dates.map((d) => ({ ...baseRow, date: d, series_id: seriesId }));
-          const { data: ins, error } = await supabase.from('tasks').insert(rows).select('id, date');
-          if (error) {
-            console.error('insert series failed:', error.message);
-          } else {
-            created += ins?.length ?? 0;
-            for (const r of ins ?? []) {
-              pendingTasks.push({ ...baseRow, date: r.date, id: r.id, series_id: seriesId });
-            }
-          }
-        }
-      } else if (op.op_type === 'update') {
-        const target = tasksById.get(op.task_id);
-        if (!target) continue;
-        const scope = pickScope(op.scope);
-
-        const changingRule =
-          op.repeat_rule !== undefined &&
-          VALID_RULES.includes(op.repeat_rule) &&
-          op.repeat_rule !== target.repeat_rule;
-
-        if (changingRule) {
-          // Recurrence change = rebuild: delete the in-scope rows, insert
-          // a fresh schedule anchored at the picked instance's date.
-          const newRule = op.repeat_rule;
-          const newTitle =
-            op.title !== undefined ? String(op.title).slice(0, 200) : target.title;
-          const newTime = clampTime(
-            op.time_minutes !== undefined ? op.time_minutes : target.time_minutes,
-          );
-          const newDur = clampDuration(
-            op.duration_minutes !== undefined ? op.duration_minutes : target.duration_minutes,
-          );
-          const newStartDate = isYYYYMMDD(op.date) ? op.date : target.date;
-
-          let delQ = supabase.from('tasks').delete().eq('user_id', user.id);
-          if (scope === 'series' && target.series_id) {
-            delQ = delQ.eq('series_id', target.series_id);
-          } else if (scope === 'this_and_future' && target.series_id) {
-            delQ = delQ.eq('series_id', target.series_id).gte('date', target.date);
-          } else {
-            delQ = delQ.eq('id', target.id);
-          }
-          const { error: delErr } = await delQ;
-          if (delErr) {
-            console.error('restructure delete failed:', delErr.message);
-            continue;
-          }
-
-          const adjustedTime = resolveConflict(
-            newTime,
-            newDur,
-            newStartDate,
-            allTasks.concat(pendingTasks).filter((t) => t.id !== target.id),
-          );
-
-          const baseRow = {
-            user_id: user.id,
-            title: newTitle,
-            time_minutes: adjustedTime,
-            duration_minutes: newDur,
-            repeat_rule: newRule,
-            done: false,
-            category: inferCategory(newTitle),
-          };
-
-          if (newRule === 'none') {
-            const row = { ...baseRow, date: newStartDate };
-            const { data: ins, error } = await supabase.from('tasks').insert(row).select('id');
-            if (error) console.error('restructure insert failed:', error.message);
-            else {
-              updated += ins?.length ?? 0;
-              if (ins?.[0]) pendingTasks.push({ ...row, id: ins[0].id });
-            }
-          } else {
-            const seriesId = randomUUID();
-            const dates = expandRepeatDates(newStartDate, newRule);
-            const rows = dates.map((d) => ({ ...baseRow, date: d, series_id: seriesId }));
-            const { data: ins, error } = await supabase
-              .from('tasks')
-              .insert(rows)
-              .select('id, date');
-            if (error) console.error('restructure series insert failed:', error.message);
-            else {
-              updated += ins?.length ?? 0;
-              for (const r of ins ?? []) {
-                pendingTasks.push({ ...baseRow, date: r.date, id: r.id, series_id: seriesId });
-              }
-            }
-          }
-          continue;
-        }
-
-        // Normal update path
-        const patch = {};
-        if (op.title !== undefined) patch.title = String(op.title).slice(0, 200);
-        if (op.time_minutes !== undefined) patch.time_minutes = clampTime(op.time_minutes);
-        if (op.duration_minutes !== undefined) {
-          patch.duration_minutes = clampDuration(op.duration_minutes);
-        }
-        if (typeof op.done === 'boolean') patch.done = op.done;
-        // `date` only meaningful for instance scope — setting all rows in a
-        // series to the same date is almost never what the user wants.
-        if (scope === 'instance' && isYYYYMMDD(op.date)) patch.date = op.date;
-        // Recompute category on rename; otherwise leave the stored value alone.
-        if (patch.title !== undefined) patch.category = inferCategory(patch.title);
-
-        if (!Object.keys(patch).length) continue;
-
-        // Conflict-resolve only for instance moves (series-wide time changes
-        // intentionally honor the requested time across all dates).
-        if (
-          scope === 'instance' &&
-          (patch.time_minutes !== undefined || patch.date !== undefined)
-        ) {
-          const newDate = patch.date ?? target.date;
-          const newTime = patch.time_minutes ?? target.time_minutes;
-          const newDur = patch.duration_minutes ?? target.duration_minutes;
-          const adjusted = resolveConflict(
-            newTime,
-            newDur,
-            newDate,
-            allTasks.concat(pendingTasks),
-            target.id,
-          );
-          if (adjusted !== newTime) patch.time_minutes = adjusted;
-        }
-
-        let q = supabase.from('tasks').update(patch).eq('user_id', user.id);
-        if (scope === 'series' && target.series_id) {
-          q = q.eq('series_id', target.series_id);
-        } else if (scope === 'this_and_future' && target.series_id) {
-          q = q.eq('series_id', target.series_id).gte('date', target.date);
-        } else {
-          q = q.eq('id', op.task_id);
-        }
-        const { data: updRows, error } = await q.select('id');
-        if (error) console.error('update task failed:', error.message);
-        else updated += updRows?.length ?? 0;
-      } else if (op.op_type === 'delete') {
-        const target = tasksById.get(op.task_id);
-        if (!target) continue;
-        const scope = pickScope(op.scope);
-
-        let q = supabase.from('tasks').delete().eq('user_id', user.id);
-        if (scope === 'series' && target.series_id) {
-          q = q.eq('series_id', target.series_id);
-        } else if (scope === 'this_and_future' && target.series_id) {
-          q = q.eq('series_id', target.series_id).gte('date', target.date);
-        } else {
-          q = q.eq('id', op.task_id);
-        }
-        const { data: delRows, error } = await q.select('id');
-        if (error) console.error('delete task failed:', error.message);
-        else deleted += delRows?.length ?? 0;
-      }
-    }
-
-    const highConfidence = (planJson.new_constraints ?? []).filter(
-      (c) => c.confidence === 'high',
-    );
-    for (const c of highConfidence) {
-      const { error } = await supabase.rpc('upsert_constraint', {
-        p_text: String(c.text || '').trim().toLowerCase(),
-        p_category: c.category,
-        p_strength: c.strength,
-      });
-      if (error) console.error('upsert_constraint failed:', error.message);
-    }
-    for (const id of planJson.reinforced_constraint_ids ?? []) {
-      const { error } = await supabase.rpc('bump_constraint', { p_id: id });
-      if (error) console.error('bump_constraint failed:', error.message);
-    }
-    const { error: evictErr } = await supabase.rpc('evict_old_constraints', { p_cap: 80 });
-    if (evictErr) console.error('evict_old_constraints failed:', evictErr.message);
-
-    const summary =
-      (planJson.summary && String(planJson.summary).trim()) ||
-      (ops.length === 0
-        ? "No changes — I didn't catch a clear plan."
-        : 'Updated your schedule.');
-
-    const response = {
-      summary,
-      applied: { created, updated, deleted },
-      new_constraints: highConfidence.length,
-    };
-
-    idempotencyCache.set(idKey, { ts: Date.now(), response });
-
-    return res.json(response);
-  } catch (e) {
-    const status = e.status || 500;
-    console.error('/plan-day-audio error:', e);
-    return res.status(status).json({ error: e.message || 'Server error' });
-  }
-});
-
-app.post('/transcribe', async (req, res) => {
-  try {
-    await requireUser(req);
-    const { audio_base64, mime_type } = req.body || {};
-
-    if (!audio_base64) return res.status(400).json({ error: 'audio required' });
-    if (audio_base64.length > 7 * 1024 * 1024) {
-      return res.status(400).json({ error: 'audio too large (max ~5MB decoded)' });
-    }
-    if (mime_type && !ALLOWED_AUDIO_MIMES.includes(mime_type)) {
-      return res.status(400).json({ error: 'unsupported mime_type' });
-    }
-
-    const transcript = await transcribe({
-      audioBase64: audio_base64,
-      mimeType: mime_type || 'audio/aac',
-    });
-    return res.json({ transcript });
-  } catch (e) {
-    const status = e.status || 500;
-    console.error('/transcribe error:', e.message, e.finishReason || '');
-    return res.status(status).json({ error: e.message || 'Server error' });
-  }
-});
 
 // REST harness for the agent loop. Drives the same executor/journal path the
 // WS layer (Agent C) will use, but synchronously returns the full transcript
@@ -688,16 +345,13 @@ const SESSION_GRACE_MS = 30 * 1000;
 // silently without sending cancel_session. Independent of SESSION_GRACE_MS,
 // which applies AFTER a WS close while we wait for a reconnect.
 const SESSION_IDLE_MS = 90 * 1000;
-const WATCHDOG_SILENCE_MS = 1500;
-const LONG_UTTERANCE_MS = 8000;
 const DEBOUNCE_BOUNDARY_MS = 250;
 const REPLAY_BUFFER_SIZE = 50;
-const MAX_AUDIO_BUFFER_BYTES = 5 * 1024 * 1024;
 // Grace at the start of an in-flight agent loop during which a new boundary
 // will NOT abort the loop. Most agent turns finish in ~1-3s; aborting on
 // every follow-up utterance (which often arrives because the user assumes
-// nothing happened) wastes the first turn's STT + Gemini work. After the
-// grace window, real barge-in still works.
+// nothing happened) wastes the first turn's work. After the grace window,
+// real barge-in still works.
 const LOOP_ABORT_GRACE_MS = 2_500;
 
 function wsSend(ws, event) {
@@ -719,8 +373,6 @@ function pushReplay(session, event) {
 }
 
 function clearSessionTimers(session) {
-  if (session.watchdogTimer) { clearTimeout(session.watchdogTimer); session.watchdogTimer = null; }
-  if (session.longUtterTimer) { clearTimeout(session.longUtterTimer); session.longUtterTimer = null; }
   if (session.closeTimer) { clearTimeout(session.closeTimer); session.closeTimer = null; }
   if (session.idleTimer) { clearTimeout(session.idleTimer); session.idleTimer = null; }
 }
@@ -744,29 +396,7 @@ function teardownSession(sessionId, reason) {
   console.log(`[ws] session ${sessionId} torn down (${reason})`);
 }
 
-function scheduleWatchdog(session) {
-  if (session.watchdogTimer) clearTimeout(session.watchdogTimer);
-  session.watchdogTimer = setTimeout(() => {
-    session.watchdogTimer = null;
-    console.log(`[ws] silence_watchdog fired (audio buffered=${session.audioBufferBytes}B)`);
-    if (session.audioBuffer.length > 0) {
-      void handleBoundary(session, 'silence_watchdog');
-    }
-  }, WATCHDOG_SILENCE_MS);
-}
-
-function scheduleLongUtterance(session) {
-  if (session.longUtterTimer) clearTimeout(session.longUtterTimer);
-  session.longUtterTimer = setTimeout(() => {
-    session.longUtterTimer = null;
-    console.log(`[ws] long_utterance_watchdog fired (audio buffered=${session.audioBufferBytes}B)`);
-    if (session.audioBuffer.length > 0) {
-      void handleBoundary(session, 'long_utterance_watchdog');
-    }
-  }, LONG_UTTERANCE_MS);
-}
-
-async function handleBoundary(session, source) {
+async function handleBoundary(session, source, providedText) {
   // Debounce: coalesce boundaries firing within 250ms of the previous one.
   const now = Date.now();
   if (now - session.lastUtteranceEndTs < DEBOUNCE_BOUNDARY_MS) {
@@ -775,36 +405,20 @@ async function handleBoundary(session, source) {
   }
   session.lastUtteranceEndTs = now;
 
-  if (session.watchdogTimer) { clearTimeout(session.watchdogTimer); session.watchdogTimer = null; }
-  if (session.longUtterTimer) { clearTimeout(session.longUtterTimer); session.longUtterTimer = null; }
-
-  if (!session.audioBuffer.length) {
-    console.log(`[ws] handleBoundary(${source}) skipped — empty audio buffer`);
+  const text = String(providedText || '').replace(/\s+/g, ' ').trim();
+  if (!text) {
+    console.log(`[ws] handleBoundary(${source}) skipped — empty text`);
     return;
   }
-
-  // Snapshot + reset audio buffer. NOTE: each entry in audioBuffer is a
-  // complete .m4a file (the chunker stops+restarts every ~1s — see the TODO
-  // at src/features/agent/lib/audio-chunker.ts top). They are NOT
-  // concatenable bytes — `Buffer.concat` produces an invalid container that
-  // Gemini transcribes as just the first chunk. Transcribe each chunk
-  // separately and join the resulting text.
-  const audioChunks = session.audioBuffer.slice();
-  const totalBytes = session.audioBufferBytes;
-  session.audioBuffer = [];
-  session.audioBufferBytes = 0;
-  session.speechStartTs = null;
 
   const segId = `seg:${randomUUID()}`;
   session.segId = segId;
 
-  // If a loop is running, abort it ONLY if it's been running long enough
-  // that the user clearly meant to barge in. Within the first ~2.5s, the
-  // new utterance is almost always a follow-up the user kept saying because
-  // they didn't see feedback yet — we want the first turn to complete (the
-  // model will see the appended transcript in the next loop). After the
-  // grace, real barge-in (user explicitly cancelling a long task) works as
-  // before.
+  // If a loop is running, abort it ONLY if it's been running long enough that
+  // the user clearly meant to barge in. Within the first ~2.5s the new
+  // utterance is almost always a follow-up — let the first turn complete
+  // (the model will see the appended transcript on the next loop). After the
+  // grace window, real barge-in still works.
   if (session.loopRunning) {
     const loopAge = Date.now() - (session.loopStartedAt || 0);
     if (loopAge > LOOP_ABORT_GRACE_MS) {
@@ -815,33 +429,7 @@ async function handleBoundary(session, source) {
     }
   }
 
-  console.log(`[stt] boundary=${source} seg=${segId} ${audioChunks.length} chunk(s) ${totalBytes}B → transcribing…`);
-  const sttStart = Date.now();
-  const parts = [];
-  try {
-    for (let i = 0; i < audioChunks.length; i++) {
-      const piece = await transcribe({
-        audioBase64: audioChunks[i].toString('base64'),
-        mimeType: 'audio/m4a',
-      });
-      const trimmed = String(piece || '').trim();
-      if (trimmed) parts.push(trimmed);
-    }
-  } catch (e) {
-    console.error('[ws] transcribe failed:', e.message);
-    const ev = { type: 'error', code: 'TRANSCRIBE_FAILED', message: e.message || 'transcribe error' };
-    wsSend(session.ws, ev);
-    return;
-  }
-
-  const text = parts.join(' ').replace(/\s+/g, ' ').trim();
-  console.log(`[stt] ✓ seg=${segId} ${audioChunks.length} parts joined in ${Date.now() - sttStart}ms: "${text.slice(0, 200)}"`);
-  const partial = { type: 'partial_transcript', seg_id: segId, text, is_final: true };
-  wsSend(session.ws, partial);
-
-  if (!text) {
-    return; // nothing to feed the model
-  }
+  console.log(`[stt] boundary=${source} seg=${segId} text="${text.slice(0, 200)}"`);
 
   session.transcripts.push(text);
 
@@ -993,22 +581,16 @@ function onWsConnect(ws, ctx) {
     tz: ctx.tz,
     segId: null,
 
-    audioBuffer: [],
-    audioBufferBytes: 0,
     transcripts: [],
     modelHistory: [],
     loopRunning: false,
     loopStartedAt: 0,
     abortCurrent: () => {},
 
-    lastChunkTs: 0,
-    speechStartTs: null,
     lastUtteranceEndTs: 0,
     pendingUndo: null,
 
     closeTimer: null,
-    watchdogTimer: null,
-    longUtterTimer: null,
     idleTimer: null,
 
     replay: [], // circular buffer of tool_result events
@@ -1045,39 +627,11 @@ function onWsConnect(ws, ctx) {
 
 async function handleWsMessage(session, data, isBinary) {
   if (isBinary) {
-    // Audio chunk.
-    const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
-    console.log(`[ws] ← audio chunk (${buf.length}B, buffered=${session.audioBufferBytes + buf.length}B)`);
-    // Cap the in-memory audio buffer. If the new chunk would overflow, drop
-    // oldest entries until it fits and notify the client (which will stop on
-    // its own when it sees an error).
-    if (session.audioBufferBytes + buf.length > MAX_AUDIO_BUFFER_BYTES) {
-      let droppedBytes = 0;
-      while (
-        session.audioBuffer.length > 0 &&
-        session.audioBufferBytes + buf.length > MAX_AUDIO_BUFFER_BYTES
-      ) {
-        const oldest = session.audioBuffer.shift();
-        session.audioBufferBytes -= oldest.length;
-        droppedBytes += oldest.length;
-      }
-      if (droppedBytes > 0) {
-        console.warn(`[ws] audio buffer overflow, dropped ${droppedBytes} bytes`);
-        wsSend(session.ws, {
-          type: 'error',
-          code: 'BUFFER_OVERRUN',
-          message: 'Audio buffer overflow',
-        });
-      }
-    }
-    session.audioBuffer.push(buf);
-    session.audioBufferBytes += buf.length;
-    session.lastChunkTs = Date.now();
-    if (session.speechStartTs == null) {
-      session.speechStartTs = session.lastChunkTs;
-      scheduleLongUtterance(session);
-    }
-    scheduleWatchdog(session);
+    // Legacy: this session protocol no longer accepts binary audio frames.
+    // The client transcribes locally (Whisper via react-native-executorch)
+    // and sends finalized text via the `utterance_text` command. Drop
+    // anything binary that arrives — likely a stale older-build client.
+    console.warn('[ws] dropping unexpected binary frame; client should send utterance_text');
     return;
   }
 
@@ -1095,9 +649,27 @@ async function handleWsMessage(session, data, isBinary) {
   console.log(`[ws] ← cmd ${cmd.type}`, cmd.type === 'resume' ? `(target=${cmd.session_id})` : '');
 
   switch (cmd.type) {
-    case 'utterance_end':
-      await handleBoundary(session, 'utterance_end');
+    case 'utterance_text': {
+      const text = String(cmd.text || '').trim();
+      if (!text) {
+        wsSend(session.ws, {
+          type: 'error',
+          code: 'INVALID_TEXT',
+          message: 'utterance_text requires non-empty text',
+        });
+        return;
+      }
+      if (text.length > 4096) {
+        wsSend(session.ws, {
+          type: 'error',
+          code: 'INVALID_TEXT',
+          message: 'utterance_text exceeds 4096 char limit',
+        });
+        return;
+      }
+      await handleBoundary(session, 'utterance_text', text);
       return;
+    }
 
     case 'interrupt':
       try { session.abortCurrent?.(); } catch {}
@@ -1297,8 +869,6 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`Backend server running on http://0.0.0.0:${PORT}`);
   console.log(`   - GET  /health           - Health check`);
   console.log(`   - GET  /proxy-ics?url=…  - ICS calendar proxy`);
-  console.log(`   - POST /plan-day-audio   - Voice/text plan (auth required)`);
-  console.log(`   - POST /transcribe       - Audio → text (auth required)`);
   console.log(`   - POST /agent/turn       - Agent loop REST harness (auth required)`);
   console.log(`   - WS   /agent/session    - Agent streaming session (auth required)`);
 });

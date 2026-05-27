@@ -8,14 +8,27 @@ export function useSession(): { session: Session | null; loading: boolean } {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session);
-      setLoading(false);
-    });
+    let cancelled = false;
+    supabase.auth
+      .getSession()
+      .then(({ data }) => {
+        if (cancelled) return;
+        setSession(data.session);
+      })
+      .catch((err) => {
+        if (__DEV__) console.warn("[session] getSession failed:", err?.message ?? err);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
     const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
       setSession(s);
+      setLoading(false);
     });
-    return () => sub.subscription.unsubscribe();
+    return () => {
+      cancelled = true;
+      sub.subscription.unsubscribe();
+    };
   }, []);
 
   return { session, loading };

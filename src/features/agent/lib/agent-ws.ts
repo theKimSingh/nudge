@@ -1,5 +1,4 @@
 export type ServerEvent =
-  | { type: 'partial_transcript'; seg_id: string; text: string; is_final: boolean }
   | { type: 'agent_thinking'; seg_id: string }
   | { type: 'agent_done'; seg_id: string }
   | { type: 'tool_call'; call_id: string; name: string; args: Record<string, unknown> }
@@ -15,7 +14,7 @@ export type ServerEvent =
   | { type: 'session_ready'; session_id: string };
 
 export type ClientCommand =
-  | { type: 'utterance_end'; client_seg_id: string }
+  | { type: 'utterance_text'; client_seg_id: string; text: string }
   | { type: 'interrupt'; reason?: string }
   | { type: 'client_undo'; n: number; client_op_id: string }
   | { type: 'cancel_session' }
@@ -38,15 +37,8 @@ export type AgentWsOptions = {
 const RECONNECT_DELAYS_MS = [1500, 3000, 6000];
 const MAX_RECONNECT_ATTEMPTS = RECONNECT_DELAYS_MS.length;
 const OUTBOX_MAX_MESSAGES = 50;
-const AUDIO_OUTBOX_MAX_BYTES = 1_000_000;
 
-type OutboxEntry =
-  | { kind: 'json'; data: string }
-  | { kind: 'audio'; data: ArrayBuffer | Uint8Array; bytes: number };
-
-function byteLength(buf: ArrayBuffer | Uint8Array): number {
-  return 'byteLength' in buf ? buf.byteLength : 0;
-}
+type OutboxEntry = { kind: 'json'; data: string };
 
 export function connectAgentWs(opts: AgentWsOptions, handlers: AgentWsHandlers) {
   let ws: WebSocket | null = null;
@@ -64,14 +56,6 @@ export function connectAgentWs(opts: AgentWsOptions, handlers: AgentWsHandlers) 
     return `${opts.url}${sep}${qs}`;
   }
 
-  function audioBytesQueued(): number {
-    let total = 0;
-    for (const entry of outbox) {
-      if (entry.kind === 'audio') total += entry.bytes;
-    }
-    return total;
-  }
-
   function enqueueJson(data: string) {
     if (outbox.length >= OUTBOX_MAX_MESSAGES) {
       const dropped = outbox.shift();
@@ -82,52 +66,13 @@ export function connectAgentWs(opts: AgentWsOptions, handlers: AgentWsHandlers) 
     outbox.push({ kind: 'json', data });
   }
 
-  function enqueueAudio(data: ArrayBuffer | Uint8Array) {
-    const bytes = byteLength(data);
-    outbox.push({ kind: 'audio', data, bytes });
-    if (audioBytesQueued() > AUDIO_OUTBOX_MAX_BYTES) {
-      // Drop oldest audio chunks (keep intent/JSON commands intact) until under cap.
-      for (let i = 0; i < outbox.length && audioBytesQueued() > AUDIO_OUTBOX_MAX_BYTES; ) {
-        if (outbox[i].kind === 'audio') {
-          const dropped = outbox.splice(i, 1)[0];
-          if (__DEV__) {
-            console.warn('[agent-ws] audio outbox over 1MB, dropping oldest audio chunk', dropped && 'bytes' in dropped ? dropped.bytes : 0);
-          }
-        } else {
-          i += 1;
-        }
-      }
-    }
-    if (outbox.length > OUTBOX_MAX_MESSAGES) {
-      // Hard cap as a final guard; prefer dropping oldest audio first.
-      for (let i = 0; i < outbox.length && outbox.length > OUTBOX_MAX_MESSAGES; ) {
-        if (outbox[i].kind === 'audio') {
-          outbox.splice(i, 1);
-        } else {
-          i += 1;
-        }
-      }
-      while (outbox.length > OUTBOX_MAX_MESSAGES) {
-        const dropped = outbox.shift();
-        if (__DEV__) {
-          console.warn('[agent-ws] outbox cap exceeded, dropping oldest', dropped?.kind);
-        }
-      }
-    }
-  }
-
   function flushOutbox() {
     if (!ws || ws.readyState !== 1) return;
     while (outbox.length) {
       const entry = outbox.shift()!;
       try {
-        if (entry.kind === 'json') {
-          ws.send(entry.data);
-        } else {
-          ws.send(entry.data as any);
-        }
+        ws.send(entry.data);
       } catch (e) {
-        // Re-queue this entry at the front and stop draining.
         outbox.unshift(entry);
         handlers.onError?.(e instanceof Error ? e : new Error(String(e)));
         return;
@@ -163,7 +108,6 @@ export function connectAgentWs(opts: AgentWsOptions, handlers: AgentWsHandlers) 
           // ignored: socket may have closed between onopen and send
         }
       }
-      // Successful (re)connect — reset attempt counter and drain queued sends.
       reconnectAttempts = 0;
       flushOutbox();
       handlers.onOpen?.();
@@ -207,7 +151,6 @@ export function connectAgentWs(opts: AgentWsOptions, handlers: AgentWsHandlers) 
         }, delay);
         return;
       }
-      // Exhausted reconnect budget — give up and surface the failure.
       handlers.onError?.(new Error('connection lost'));
       handlers.onClose?.(info);
     };
@@ -224,17 +167,6 @@ export function connectAgentWs(opts: AgentWsOptions, handlers: AgentWsHandlers) 
       }
       try {
         ws.send(data);
-      } catch (e) {
-        handlers.onError?.(e instanceof Error ? e : new Error(String(e)));
-      }
-    },
-    sendAudioChunk(buf: ArrayBuffer | Uint8Array) {
-      if (!ws || ws.readyState !== 1) {
-        enqueueAudio(buf);
-        return;
-      }
-      try {
-        ws.send(buf as any);
       } catch (e) {
         handlers.onError?.(e instanceof Error ? e : new Error(String(e)));
       }

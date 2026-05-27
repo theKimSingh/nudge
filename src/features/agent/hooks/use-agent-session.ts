@@ -1,6 +1,12 @@
-import { requestRecordingPermissionsAsync } from 'expo-audio';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, AppState, type AppStateStatus, Linking } from 'react-native';
+import {
+  Alert,
+  AppState,
+  type AppStateStatus,
+  Linking,
+  PermissionsAndroid,
+  Platform,
+} from 'react-native';
 import {
   useSharedValue,
   withTiming,
@@ -16,17 +22,21 @@ import { uuidv4 } from '@/src/lib/uuid';
 import type { TaskCategory } from '@/src/types/database';
 
 import { connectAgentWs, type ServerEvent } from '../lib/agent-ws';
-import { createAudioChunker } from '../lib/audio-chunker';
+import { createPcmStream } from '../lib/pcm-stream';
 import { createVad } from '../lib/vad';
+import { cleanTranscript, useWhisperStream } from '../lib/whisper-asr';
 
 export type AgentSessionPhase =
   | 'idle'
+  // Whisper is downloading / warming on first launch. Mic is locked until
+  // isReady flips true.
+  | 'loading'
   | 'connecting'
   | 'listening'
-  // Local speech_end fired, audio flushed to server, awaiting STT + agent
-  // kickoff. Bridges the visible gap between "user stopped talking" and the
-  // first server-side `agent_thinking` event so the UI never shows the stale
-  // "I'm listening…" hint while a request is in flight.
+  // Kept in the enum for slow-WS recovery scenarios, but the happy path goes
+  // listening → thinking directly. With local ASR the only work after
+  // speech_end is a sub-100ms WS send, so entering syncing here would just
+  // flash "Processing…" for a single frame.
   | 'syncing'
   | 'thinking'
   | 'error';
@@ -47,7 +57,6 @@ export type TaskToast =
       duration_minutes?: number;
       repeat_rule?: 'none' | 'daily' | 'weekdays' | 'weekly';
       bornAt: number;
-      /** Override default TTL for this toast (ms). */
       ttlMs?: number;
     }
   | {
@@ -55,7 +64,6 @@ export type TaskToast =
       kind: 'question';
       text: string;
       bornAt: number;
-      /** Override default TTL for this toast (ms). */
       ttlMs?: number;
     };
 
@@ -67,40 +75,30 @@ export type UseAgentSessionResult = {
   lastUndoChip: AgentUndoChip | null;
   idlePromptVisible: boolean;
   taskToasts: TaskToast[];
-  /** Count of successful task mutations this session. Drives the listening
-   *  hint (0 → "I'm listening…", ≥1 → "What's next?"). */
   actionsCompleted: number;
+  /** 0-1, Whisper model download progress on cold start. */
+  downloadProgress: number;
+  /** True once the on-device ASR model is warm and ready to record. */
+  asrReady: boolean;
   start(date: string): Promise<void>;
-  stop(): Promise<void>;
+  stop(reason?: string): Promise<void>;
   clientUndo(n?: number): void;
 };
 
 const IDLE_SOFT_MS = 30_000;
 const IDLE_HARD_MS = 60_000;
 const TASK_TOAST_TTL_MS = 5_000;
-// Question-kind toasts carry the agent's refusal / clarification text, which
-// is usually longer than "Added X at 8am" — give it more reading time.
 const QUESTION_TOAST_TTL_MS = 8_000;
-// Short flash for "Unable to process request" so it clears quickly and the
-// listening hint comes back on its own.
 const FLASH_TOAST_TTL_MS = 1_800;
 const TASK_TOAST_MAX = 4;
-// Stop the session after this many consecutive utterances came back empty.
-// Catches the "user opened mic but is in a noisy room / not actually speaking
-// to it" case without forcing them to manually tap stop.
-const EMPTY_TRANSCRIPT_STREAK_LIMIT = 2;
-// Min characters for an STT result to count as "real speech". Sub-3 chars
-// (e.g. "uh", "a", or fragments) are treated as empty for streak-counting.
+// Whisper Tiny can return empty on borderline-quality short utterances; give
+// the user a few tries before assuming the mic is wasted.
+const EMPTY_TRANSCRIPT_STREAK_LIMIT = 4;
 const MIN_REAL_TRANSCRIPT_CHARS = 3;
-// Grace period at the start of "thinking" during which client-side barge-in
-// is suppressed. Most agent turns finish in ~1-3s; sending `interrupt` on a
-// stray cough or the user mid-thought 300ms after asking kills the turn for
-// no good reason. Real barge-in (user genuinely changes their mind on a long
-// task) still works after this window expires.
 const INTERRUPT_GRACE_MS = 2_500;
 
 type AgentWsHandle = ReturnType<typeof connectAgentWs>;
-type ChunkerHandle = ReturnType<typeof createAudioChunker>;
+type PcmStreamHandle = ReturnType<typeof createPcmStream>;
 type VadHandle = ReturnType<typeof createVad>;
 
 function toWsUrl(httpUrl: string): string {
@@ -115,8 +113,38 @@ function joinUrl(base: string, path: string): string {
   return b + p;
 }
 
+async function requestMicPermission(): Promise<{ granted: boolean; canAskAgain: boolean }> {
+  if (Platform.OS === 'android') {
+    const status = await PermissionsAndroid.request(
+      PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+    );
+    return {
+      granted: status === PermissionsAndroid.RESULTS.GRANTED,
+      canAskAgain: status !== PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN,
+    };
+  }
+  // iOS: AVAudioSession surfaces its own prompt the first time LiveAudioStream
+  // .start() is called. If denied, mic capture silently produces zeros — the
+  // empty-transcript streak guard catches that downstream.
+  return { granted: true, canAskAgain: true };
+}
+
 export function useAgentSession(): UseAgentSessionResult {
   const { applyServerInsert, applyServerUpdate, applyServerDelete } = useTasks();
+
+  // On-device ASR hook. Mounts once for the lifetime of the session provider;
+  // the model downloads on first cold start (~75MB Whisper Tiny EN quantized,
+  // cached after) and exposes a generator API for streaming partials.
+  //
+  // IMPORTANT: useSpeechToText returns a FRESH object every render (no
+  // memoization in the executorch hook). Reading `whisper` directly inside
+  // useCallback / useEffect dependency arrays would make those callbacks
+  // unstable, causing cleanup effects to re-fire on every render — which
+  // manifests as the session opening + immediately sending cancel_session in
+  // a loop. We mirror through whisperRef so dependent callbacks stay stable.
+  const whisper = useWhisperStream();
+  const whisperRef = useRef(whisper);
+  whisperRef.current = whisper;
 
   const [phase, setPhase] = useState<AgentSessionPhase>('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -129,64 +157,55 @@ export function useAgentSession(): UseAgentSessionResult {
   const amplitude = useSharedValue(0);
 
   const wsRef = useRef<AgentWsHandle | null>(null);
-  const chunkerRef = useRef<ChunkerHandle | null>(null);
+  const pcmStreamRef = useRef<PcmStreamHandle | null>(null);
   const vadRef = useRef<VadHandle | null>(null);
   const phaseRef = useRef<AgentSessionPhase>('idle');
   const stoppingRef = useRef(false);
   const taskChangesRef = useRef(0);
-  // Counts mutations within the current agent segment so we can decide
-  // whether the agent's terminal `summary` is the only thing the user has
-  // to learn from this turn (e.g. a refusal like "can't schedule, already
-  // passed"). Resets on `agent_thinking` (start of segment).
   const mutationsThisSegmentRef = useRef(0);
   const idleSoftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const idleHardTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Count consecutive utterances that came back empty / junk so we can stop
-  // the session when the mic is just picking up background noise.
   const emptyTranscriptStreakRef = useRef(0);
-  // Timestamp when the current "thinking" phase began. Used to gate
-  // client-side barge-in (interrupt) so a stray cough or the user starting
-  // to say "actually..." 200ms after asking a question doesn't kill the
-  // agent before it can complete a short task.
   const thinkingStartedAtRef = useRef(0);
-  // Mic gate. True while the agent is processing (syncing / thinking) — the
-  // mic is still recording for VAD purposes (so EdgeGlow + barge-in keep
-  // working after the grace expires) but `chunk` and `metering` events from
-  // the chunker are dropped, so no audio reaches the server and no new
-  // utterance_end fires. Prevents the user from queuing a second request
-  // while the first is still landing tasks on the calendar.
+  // Closes while the agent is mid-turn so we don't feed PCM into Whisper or
+  // update the VAD / amplitude. Mic capture itself keeps running — gating is
+  // purely a JS-layer drop.
   const audioGateClosedRef = useRef(false);
-  // The speech_end handler intentionally flushes the chunker and sends the
-  // resulting audio along with utterance_end. That flush happens to land
-  // AFTER setPhase('syncing'), which closes the gate — so without this
-  // bypass the flush's chunk would be dropped and the server would receive
-  // a 0-byte utterance. Set to true right before the intentional flush,
-  // consumed by the next chunk event regardless of gate state.
-  const bypassGateForNextChunkRef = useRef(false);
+  // We do BOTH streaming and buffering in parallel:
+  // Streaming-only ASR. The executorch model runs one op at a time, so we
+  // can't mix stream() + batch transcribe() on the same instance. The live
+  // generator is the single source of truth.
+  //
+  // Monotonic transcript: the longest live text we've shown this utterance.
+  // Whisper's streaming yields can shrink committed text mid-segment which
+  // makes the live display jumpy; keeping the high-water mark stops the
+  // backwards motion the user sees as "getting cut off".
+  const liveTranscriptHighWaterRef = useRef('');
+  const streamIterationPromiseRef = useRef<Promise<void> | null>(null);
 
   useEffect(() => {
     const wasClosed = audioGateClosedRef.current;
     phaseRef.current = phase;
-    // Gate the mic whenever the backend is busy. The chunker keeps recording
-    // (needed for VAD-based barge-in after the grace window), but its audio
-    // events are dropped at the JS layer so nothing leaves the device.
     const nowClosed = phase === 'syncing' || phase === 'thinking';
     audioGateClosedRef.current = nowClosed;
-    // Edge: gate just reopened (agent finished a turn). The chunker has been
-    // recording the whole time it was gated, so its internal m4a buffer holds
-    // however many seconds of audio captured during the freeze. Flush + discard
-    // so that audio is never sent. flush() emits a chunk event which we drop
-    // because the gate was momentarily reclosed for the duration of the flush.
-    if (wasClosed && !nowClosed) {
-      audioGateClosedRef.current = true;
-      chunkerRef.current
-        ?.flush()
-        .catch(() => {})
-        .finally(() => {
-          audioGateClosedRef.current = false;
-        });
+    // Reset VAD when transitioning across the gate. Without this, VAD state
+    // (e.g. mid-`candidate_silent`) carries over and fires a stale speech_end
+    // on the first chunk after the gate reopens.
+    if (wasClosed !== nowClosed) {
+      vadRef.current?.reset();
     }
   }, [phase]);
+
+  // Reflect the on-device model's readiness in the phase machine. While the
+  // model is downloading on first launch we surface "Loading speech model…"
+  // so the user knows why the mic is unresponsive.
+  useEffect(() => {
+    if (!whisper.isReady && phaseRef.current === 'idle') {
+      setPhase('loading');
+    } else if (whisper.isReady && phaseRef.current === 'loading') {
+      setPhase('idle');
+    }
+  }, [whisper.isReady]);
 
   const clearIdleTimers = useCallback(() => {
     if (idleSoftTimerRef.current) {
@@ -208,15 +227,16 @@ export function useAgentSession(): UseAgentSessionResult {
 
   const teardown = useCallback(async () => {
     clearIdleTimers();
-    const chunker = chunkerRef.current;
+    const pcm = pcmStreamRef.current;
     const ws = wsRef.current;
-    chunkerRef.current = null;
+    pcmStreamRef.current = null;
     wsRef.current = null;
     vadRef.current = null;
+    liveTranscriptHighWaterRef.current = '';
 
-    if (chunker) {
+    if (pcm) {
       try {
-        await chunker.stop();
+        await pcm.stop();
       } catch {
         // ignored
       }
@@ -236,13 +256,14 @@ export function useAgentSession(): UseAgentSessionResult {
     amplitude.value = withTiming(0, { duration: 200 });
   }, [amplitude, clearIdleTimers]);
 
-  const stop = useCallback(async () => {
+  const stop = useCallback(async (reason: string = 'unspecified') => {
+    if (__DEV__) console.log(`[agent] stop reason=${reason}`);
     if (stoppingRef.current) return;
     stoppingRef.current = true;
     try {
       await teardown();
       taskChangesRef.current = 0;
-      setPhase('idle');
+      setPhase(whisperRef.current?.isReady ? 'idle' : 'loading');
       setTranscript('');
       setErrorMessage(null);
       setIdlePromptVisible(false);
@@ -263,7 +284,7 @@ export function useAgentSession(): UseAgentSessionResult {
     }, IDLE_SOFT_MS);
     idleHardTimerRef.current = setTimeout(() => {
       idleHardTimerRef.current = null;
-      void stop();
+      void stop('idle_hard_timeout');
     }, IDLE_HARD_MS);
   }, [clearIdleTimers, stop]);
 
@@ -278,10 +299,6 @@ export function useAgentSession(): UseAgentSessionResult {
   const handleToolResult = useCallback(
     async (ev: Extract<ServerEvent, { type: 'tool_result' }>) => {
       if (!ev.ok) {
-        // Surface tool failures so the user knows the agent tried something
-        // and the system pushed back (e.g. validation rejections). Friendly
-        // agent-authored refusals arrive via the `summary` event instead;
-        // this is the technical-error fallback.
         const rawErr =
           ev.payload && typeof ev.payload === 'object'
             ? (ev.payload.error ?? ev.payload.reason)
@@ -317,11 +334,6 @@ export function useAgentSession(): UseAgentSessionResult {
           taskChangesRef.current += 1;
           mutationsThisSegmentRef.current += 1;
         }
-        // Instant feedback: as soon as a task mutation lands, clear the
-        // user's transcribed words off-screen and flip the listening hint
-        // to "What's next?" via the actionsCompleted counter. This stops
-        // the user's prior sentence from lingering while they're ready
-        // for the next one.
         if (
           toolName === 'create_task' ||
           toolName === 'update_task' ||
@@ -337,7 +349,6 @@ export function useAgentSession(): UseAgentSessionResult {
           const userId =
             (await supabase.auth.getUser().then((r) => r.data.user?.id).catch(() => null)) ?? '';
           const nowIso = new Date().toISOString();
-          // placeholder; realtime subscription delivers canonical row
           const placeholder: Task = {
             id: payload.task_id,
             user_id: userId,
@@ -458,61 +469,12 @@ export function useAgentSession(): UseAgentSessionResult {
         resetIdleWatchdog();
         return;
       }
-      if (ev.type === 'partial_transcript') {
-        resetIdleWatchdog();
-        if (ev.is_final) {
-          const text = (ev.text ?? '').trim();
-          const isReal = text.length >= MIN_REAL_TRANSCRIPT_CHARS;
-          if (isReal) {
-            // A new user utterance is about to drive a fresh agent loop —
-            // this is the real segment boundary on the client side. Reset
-            // here (NOT on `agent_thinking`, which fires per-iteration and
-            // would zero the counter between create_task and done, causing
-            // the terminal summary to be re-pushed as a duplicate chip).
-            mutationsThisSegmentRef.current = 0;
-            emptyTranscriptStreakRef.current = 0;
-            setTranscript((cur) => (cur ? cur + ' ' + text : text));
-          } else {
-            emptyTranscriptStreakRef.current += 1;
-            if (__DEV__) {
-              console.warn(
-                `[agent] empty transcript streak ${emptyTranscriptStreakRef.current}/${EMPTY_TRANSCRIPT_STREAK_LIMIT}`,
-              );
-            }
-            // Flash a brief notice — the user spoke (or the mic heard
-            // something) but STT returned nothing usable. Short TTL so the
-            // listening hint comes back on its own.
-            pushTaskToast({
-              id: `flash:${Date.now()}`,
-              kind: 'question',
-              text: 'Unable to process request',
-              bornAt: Date.now(),
-              ttlMs: FLASH_TOAST_TTL_MS,
-            });
-            if (emptyTranscriptStreakRef.current >= EMPTY_TRANSCRIPT_STREAK_LIMIT) {
-              if (__DEV__) console.warn('[agent] stopping — no clear speech detected');
-              void stop();
-            }
-          }
-        }
-        return;
-      }
       if (ev.type === 'agent_thinking') {
-        // Fires per iteration of the agent loop — don't reset segment
-        // counters here (see partial_transcript handler).
         setPhase('thinking');
         resetIdleWatchdog();
-        // Stamp on the FIRST thinking event of the segment, not each
-        // iteration. (Later iterations still report 'agent_thinking', but
-        // we want the grace window measured from when the agent first
-        // started working, not from each tool-call cycle.)
         if (thinkingStartedAtRef.current === 0) {
           thinkingStartedAtRef.current = Date.now();
         }
-        // Transcript stays visible — feedback-band stacks it above the
-        // status line so the user sees both "what I said" and "what the
-        // agent is doing about it." Transcript is cleared on tool_result
-        // for a mutation (in handleToolResult), not here.
         return;
       }
       if (ev.type === 'agent_done') {
@@ -531,13 +493,12 @@ export function useAgentSession(): UseAgentSessionResult {
         return;
       }
       if (ev.type === 'summary') {
-        // The agent's terminal `done` summary. When the segment also produced
-        // task mutations, those have their own chips and the summary would be
-        // redundant. When nothing changed (e.g. a refusal: "I can't schedule
-        // a run for this morning as it has already passed."), the summary is
-        // the only signal the user has — surface it as a chip.
         const text = (ev.text ?? '').trim();
         if (text && mutationsThisSegmentRef.current === 0) {
+          // No mutation happened — agent is asking a question or refusing.
+          // Clear the user's stale transcript so it doesn't sit alongside
+          // the agent's reply ("Move." next to "What would you like to move?").
+          setTranscript('');
           pushTaskToast({
             id: `summary:${Date.now()}`,
             kind: 'question',
@@ -549,16 +510,77 @@ export function useAgentSession(): UseAgentSessionResult {
       }
       if (ev.type === 'error') {
         if (__DEV__) console.warn('[agent] server error:', ev.code, ev.message);
-        void stop();
+        void stop(`server_error:${ev.code}`);
         return;
       }
     },
     [handleToolResult, pushTaskToast, resetIdleWatchdog, stop],
   );
 
+  // Live streaming iteration: drives `setTranscript` so the user sees text
+  // grow as they speak. Re-opened between utterances.
+  const startStreamIteration = useCallback(async () => {
+    if (streamIterationPromiseRef.current) {
+      await streamIterationPromiseRef.current.catch(() => {});
+    }
+    liveTranscriptHighWaterRef.current = '';
+    const w = whisperRef.current;
+    if (!w) return;
+    let gen;
+    try {
+      gen = w.stream();
+    } catch (e: any) {
+      if (__DEV__) console.warn('[agent] stream() open failed:', e?.message);
+      return;
+    }
+    streamIterationPromiseRef.current = (async () => {
+      try {
+        for await (const yielded of gen) {
+          if (!yielded) continue;
+          const committed = yielded.committed?.text ?? '';
+          const nonCommitted = yielded.nonCommitted?.text ?? '';
+          const live = `${committed} ${nonCommitted}`.replace(/\s+/g, ' ').trim();
+          if (__DEV__) {
+            console.log(
+              `[agent] stream yield committed="${committed.slice(0, 60)}" non="${nonCommitted.slice(0, 60)}"`,
+            );
+          }
+          // Monotonic: only update if new text is longer than what we've
+          // already shown. Whisper's `committed` shrinks mid-segment as the
+          // streaming algorithm advances its window; without this guard the
+          // visible transcript jumps backwards and looks "cut off".
+          if (live.length > liveTranscriptHighWaterRef.current.length) {
+            liveTranscriptHighWaterRef.current = live;
+            setTranscript(live);
+          }
+        }
+      } catch {
+        // ignored — stream was stopped externally
+      } finally {
+        streamIterationPromiseRef.current = null;
+      }
+    })();
+  }, []);
+
   const start = useCallback(
     async (date: string) => {
-      if (wsRef.current || chunkerRef.current) return;
+      if (__DEV__) console.log('[agent] start() called date=', date);
+      if (wsRef.current || pcmStreamRef.current) {
+        if (__DEV__) console.warn('[agent] start() ignored — already running');
+        return;
+      }
+
+      const w = whisperRef.current;
+      if (!w?.isReady) {
+        setPhase('loading');
+        if (__DEV__) {
+          console.warn(
+            `[agent] whisper not ready, downloadProgress=${w?.downloadProgress ?? 0}`,
+          );
+        }
+        return;
+      }
+      if (__DEV__) console.log('[agent] whisper ready, proceeding');
 
       setErrorMessage(null);
       setTranscript('');
@@ -569,9 +591,9 @@ export function useAgentSession(): UseAgentSessionResult {
       setActionsCompleted(0);
       setPhase('connecting');
 
-      const perm = await requestRecordingPermissionsAsync().catch(() => null);
-      if (!perm?.granted) {
-        if (perm?.canAskAgain === false) {
+      const perm = await requestMicPermission();
+      if (!perm.granted) {
+        if (!perm.canAskAgain) {
           Alert.alert(
             'Microphone disabled',
             'Open Settings to enable the microphone for Nudge.',
@@ -603,77 +625,50 @@ export function useAgentSession(): UseAgentSessionResult {
           },
           onClose: (info) => {
             if (__DEV__) console.warn('[agent] ws close:', info.code, info.reason);
-            if (phaseRef.current !== 'idle') {
-              void stop();
+            if (phaseRef.current !== 'idle' && phaseRef.current !== 'loading') {
+              void stop(`ws_close:${info.code}:${info.reason}`);
             }
           },
         },
       );
       wsRef.current = ws;
 
-      // Audio flow: chunker records continuously into a single .m4a. On VAD
-      // speech_end we call chunker.flush() which stops the recording, emits
-      // its bytes as one 'chunk' event, and restarts a new recording. Then
-      // we send utterance_end. This produces exactly one valid m4a per
-      // utterance — Gemini transcribes it as a coherent whole instead of
-      // independently transcribing 1-second slices (which split words
-      // mid-syllable and trip the model into echoing the prompt back).
-      const chunker = createAudioChunker({
+      liveTranscriptHighWaterRef.current = '';
+
+      // Open the streaming generator so we can show live partials as the
+      // user speaks.
+      void startStreamIteration();
+
+      // Audio flow: PCM chunks arrive at ~125ms cadence. Each chunk is fed to
+      // Whisper's streaming generator (live UI) and to the VAD (endpoint
+      // detection). On speech_end we streamStop and use the streamed text.
+      const pcm = createPcmStream({
         onEvent: (e) => {
           if (e.type === 'chunk') {
-            // One-shot bypass: speech_end flushes the chunker AFTER it has
-            // already triggered setPhase('syncing'), so the gate is closed
-            // by the time this chunk arrives — but this is precisely the
-            // audio we want to send. Honor the bypass and consume it.
-            if (bypassGateForNextChunkRef.current) {
-              bypassGateForNextChunkRef.current = false;
-              ws.sendAudioChunk(e.bytes);
-              return;
-            }
-            // Gate: any other chunk (continuous-record output during the
-            // syncing/thinking window, or the gate-reopen drain flush) is
-            // stale and dropped.
             if (audioGateClosedRef.current) return;
-            ws.sendAudioChunk(e.bytes);
-          } else if (e.type === 'metering') {
-            // Gate: while the agent is processing, skip the entire VAD +
-            // amplitude pipeline. EdgeGlow stays quiet (it'll be replaced
-            // by the "Thinking…" status anyway), no speech_end fires, no
-            // utterance_end is sent. The user's voice is ignored until
-            // status flips back to listening.
-            if (audioGateClosedRef.current) return;
-            const norm = Math.min(1, Math.max(0, (e.db + 60) / 60));
+
+            // Drive amplitude visualization. dB clamped to [-90, 0]; the
+            // same `(db + 60) / 60` normalization the old chunker used.
+            const norm = Math.min(1, Math.max(0, (e.rmsDb + 60) / 60));
             amplitude.value = withTiming(norm, { duration: 80 });
-            if (__DEV__ && Math.random() < 0.1) {
-              console.log('[agent] db:', e.db.toFixed(1));
+            if (__DEV__ && Math.random() < 0.05) {
+              console.log('[agent] chunk db=', e.rmsDb.toFixed(1), 'samples=', e.samples.length);
             }
-            const vadEvent = vad.push(e.db, e.ts);
+
+            // Feed Whisper's streaming generator for live partials.
+            try {
+              whisperRef.current?.streamInsert(e.samples);
+            } catch (err: any) {
+              if (__DEV__) console.warn('[agent] streamInsert failed:', err?.message);
+            }
+
+            // Push through VAD for endpoint detection.
+            const vadEvent = vad.push(e.rmsDb, e.ts);
             if (__DEV__ && vadEvent) {
-              console.log('[agent] vad:', vadEvent.type, 'db:', e.db.toFixed(1));
+              console.log('[agent] vad:', vadEvent.type, 'db:', e.rmsDb.toFixed(1));
             }
-            if (vadEvent?.type === 'speech_end') {
-              // Mark the imminent flush chunk as exempt from the gate.
-              // setPhase('syncing') below will close the gate before
-              // chunker.flush() finishes — without this bypass the flush's
-              // audio chunk gets dropped and the server sees a 0-byte
-              // utterance.
-              bypassGateForNextChunkRef.current = true;
-              // Switch to 'syncing' the moment we stop hearing speech, before
-              // any network round-trip. The UI replaces "I'm listening…" with
-              // "Processing…" instantly — no dead window where the status
-              // text lies about what's happening on the backend.
-              if (phaseRef.current === 'listening') setPhase('syncing');
-              // Flush so the audio chunk hits the wire before the
-              // utterance_end cmd (WS outbox is FIFO; the bypass flag above
-              // ensures the chunk goes through even though the gate is now
-              // closed).
-              const flushed = chunker.flush();
-              void flushed
-                .catch(() => {})
-                .finally(() => {
-                  ws.send({ type: 'utterance_end', client_seg_id: uuidv4() });
-                });
-            } else if (vadEvent?.type === 'speech_start') {
+
+            if (vadEvent?.type === 'speech_start') {
               resetIdleWatchdog();
               if (phaseRef.current === 'thinking') {
                 const thinkingFor =
@@ -683,29 +678,95 @@ export function useAgentSession(): UseAgentSessionResult {
                 if (thinkingFor > INTERRUPT_GRACE_MS) {
                   ws.send({ type: 'interrupt' });
                 }
-                // Otherwise: agent just started, let it finish. The new
-                // utterance is still being captured locally; when VAD
-                // reports speech_end we'll flush + send utterance_end and
-                // the server will run it as the next segment (after the
-                // current one completes).
               }
+            } else if (vadEvent?.type === 'speech_end') {
+              // Streaming-only: the executorch model runs ONE operation at a
+              // time, so we can't batch-transcribe() while stream() is active
+              // (it throws "model is currently generating"). Use the streamed
+              // high-water text as the final. streamStop finalizes the
+              // generator; the iteration's last yields land the complete text.
+              const streamedSnapshot = liveTranscriptHighWaterRef.current;
+              try {
+                whisperRef.current?.streamStop();
+              } catch {
+                // ignored
+              }
+              if (phaseRef.current === 'listening') setPhase('syncing');
+              void (async () => {
+                // Wait for the stream generator to fully drain so the final
+                // yields are captured in the high-water mark.
+                if (streamIterationPromiseRef.current) {
+                  await streamIterationPromiseRef.current.catch(() => {});
+                }
+                const cleaned = cleanTranscript(
+                  liveTranscriptHighWaterRef.current.length >= streamedSnapshot.length
+                    ? liveTranscriptHighWaterRef.current
+                    : streamedSnapshot,
+                );
+
+                const isReal = cleaned.length >= MIN_REAL_TRANSCRIPT_CHARS;
+                if (!isReal) {
+                  emptyTranscriptStreakRef.current += 1;
+                  if (__DEV__) {
+                    console.warn(
+                      `[agent] empty transcript streak ${emptyTranscriptStreakRef.current}/${EMPTY_TRANSCRIPT_STREAK_LIMIT}`,
+                    );
+                  }
+                  if (phaseRef.current === 'syncing') setPhase('listening');
+                  pushTaskToast({
+                    id: `flash:${Date.now()}`,
+                    kind: 'question',
+                    text: 'Unable to process request',
+                    bornAt: Date.now(),
+                    ttlMs: FLASH_TOAST_TTL_MS,
+                  });
+                  if (
+                    emptyTranscriptStreakRef.current >= EMPTY_TRANSCRIPT_STREAK_LIMIT
+                  ) {
+                    if (__DEV__) console.warn('[agent] stopping — no clear speech detected');
+                    void stop('empty_transcript_streak');
+                    return;
+                  }
+                  void startStreamIteration();
+                  return;
+                }
+                // Real utterance — ship it.
+                emptyTranscriptStreakRef.current = 0;
+                mutationsThisSegmentRef.current = 0;
+                setPhase('thinking');
+                setTranscript(cleaned);
+                ws.send({
+                  type: 'utterance_text',
+                  client_seg_id: uuidv4(),
+                  text: cleaned,
+                });
+                void startStreamIteration();
+              })();
             }
           } else if (e.type === 'error') {
-            if (__DEV__) console.warn('[agent] chunker error:', e.error.message);
-            void stop();
+            if (__DEV__) console.warn('[agent] pcm error:', e.error.message);
+            void stop(`pcm_error:${e.error.message}`);
           }
         },
       });
-      chunkerRef.current = chunker;
+      pcmStreamRef.current = pcm;
 
       try {
-        await chunker.start();
+        await pcm.start();
       } catch (e: any) {
-        if (__DEV__) console.warn('[agent] chunker failed to start:', e?.message);
-        await stop();
+        if (__DEV__) console.warn('[agent] pcm failed to start:', e?.message);
+        await stop(`pcm_start_failed:${e?.message}`);
       }
     },
-    [amplitude, getToken, handleEvent, resetIdleWatchdog, stop],
+    [
+      amplitude,
+      getToken,
+      handleEvent,
+      pushTaskToast,
+      resetIdleWatchdog,
+      startStreamIteration,
+      stop,
+    ],
   );
 
   const clientUndo = useCallback((n: number = 1) => {
@@ -722,11 +783,11 @@ export function useAgentSession(): UseAgentSessionResult {
     let backgroundTimer: ReturnType<typeof setTimeout> | null = null;
     const sub = AppState.addEventListener('change', (next: AppStateStatus) => {
       if (next === 'background') {
-        if (wsRef.current || chunkerRef.current) {
+        if (wsRef.current || pcmStreamRef.current) {
           if (backgroundTimer) clearTimeout(backgroundTimer);
           backgroundTimer = setTimeout(() => {
             backgroundTimer = null;
-            if (wsRef.current || chunkerRef.current) void stop();
+            if (wsRef.current || pcmStreamRef.current) void stop('appstate_background');
           }, 2_000);
         }
       } else if (next === 'active') {
@@ -748,8 +809,6 @@ export function useAgentSession(): UseAgentSessionResult {
     };
   }, [teardown]);
 
-  // Expire task toasts after their TTL. Question-kind toasts carry agent
-  // text that needs more reading time than a "Added X at 8am" chip.
   useEffect(() => {
     if (taskToasts.length === 0) return;
     const interval = setInterval(() => {
@@ -776,6 +835,8 @@ export function useAgentSession(): UseAgentSessionResult {
     idlePromptVisible,
     taskToasts,
     actionsCompleted,
+    downloadProgress: whisper.downloadProgress,
+    asrReady: whisper.isReady,
     start,
     stop,
     clientUndo,
