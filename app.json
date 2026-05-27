@@ -10,10 +10,13 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.nudge.Nudge"
+      "bundleIdentifier": "com.cse481.nudge",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "Nudge transcribes your voice on-device to plan tasks."
+      }
     },
     "android": {
-      "package": "com.nudge.Nudge",
+      "package": "com.cse481.nudge",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./src/assets/images/android-icon-foreground.png",
@@ -21,7 +24,8 @@
         "monochromeImage": "./src/assets/images/android-icon-monochrome.png"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": ["android.permission.RECORD_AUDIO"]
     },
     "web": {
       "output": "static",
@@ -42,7 +46,14 @@
         }
       ],
       "expo-secure-store",
-      "@react-native-community/datetimepicker"
+      "@react-native-community/datetimepicker",
+      [
+        "expo-build-properties",
+        {
+          "ios": { "deploymentTarget": "17.0" },
+          "android": { "minSdkVersion": 33 }
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

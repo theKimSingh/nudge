@@ -1,6 +1,6 @@
 # Nudge
 
-Voice-first daily planner. React Native + Expo, TypeScript, Supabase.
+Voice-first daily planner with **on-device speech recognition**. React Native + Expo, TypeScript, Supabase. Whisper Tiny EN runs locally via [react-native-executorch](https://github.com/software-mansion/react-native-executorch); no audio ever leaves the device.
 
 ## Get started
 
@@ -9,17 +9,19 @@ nvm use            # or install Node 20
 npm install
 cp .env.example .env
 # fill in EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY (see below)
+
+# First time on this machine — build the dev client (3-5 min):
+npm run ios        # or `npm run android`
+
+# After that, just start Metro:
 npm run dev
 ```
 
-Then press:
+> **You cannot use Expo Go.** The app ships custom native modules (ExecuTorch + live PCM mic) that have to be compiled into the binary. `npm run ios` / `npm run android` builds a *dev client* — a custom version of Expo Go with your project's native modules linked — and installs it on the simulator/device. After that, `npm run dev` does hot reloads exactly like Expo Go.
 
-- `i` → iOS Simulator (macOS + Xcode)
-- `a` → Android emulator / connected device
-- `w` → Web
-- Or scan the QR with the [Expo Go](https://expo.dev/go) app
+> Rebuild the dev client (re-run `npm run ios`) only when you add/remove a native module, change `app.json` plugin config, or bump iOS/Android deployment targets. Routine JS/TS edits don't need a rebuild.
 
-If you've changed `.env`, restart Metro with `npx expo start -c` so it picks up the new values.
+iOS 17+ and Android 13+ required (ExecuTorch's floor). If you change `.env`, restart Metro with `npx expo start --dev-client -c` so it picks up the new values.
 
 ### Supabase env vars
 
@@ -49,6 +51,31 @@ npx supabase db push
 
 Commit the migration file with your change so the rest of the team has it.
 
+## Voice / on-device ASR
+
+The voice flow is entirely local for transcription; only the resulting text is sent to the backend agent loop.
+
+```
+mic ─► react-native-live-audio-stream (16 kHz int16 PCM, 250 ms chunks)
+       │
+       ├─► RMS in dB ──► amplitude SharedValue (edge-glow) + dB-threshold VAD (endpoint detection)
+       │
+       └─► Whisper Tiny EN Quantized (react-native-executorch)
+              │  stream() yields { committed, nonCommitted } token-by-token
+              ▼
+         setTranscript(live)  ─► FeedbackBand (text grows as user speaks)
+              │
+         on VAD speech_end
+              ▼
+         ws.send({ type: 'utterance_text', text })  ─► backend Gemini agent loop
+```
+
+Key files: [src/features/agent/lib/pcm-stream.ts](src/features/agent/lib/pcm-stream.ts), [src/features/agent/lib/whisper-asr.ts](src/features/agent/lib/whisper-asr.ts), [src/features/agent/lib/vad.ts](src/features/agent/lib/vad.ts), [src/features/agent/hooks/use-agent-session.ts](src/features/agent/hooks/use-agent-session.ts).
+
+First launch downloads the Whisper Tiny EN Quantized model (~75 MB) via [react-native-executorch-expo-resource-fetcher](https://github.com/software-mansion/react-native-executorch); cached after.
+
+There's a standalone smoke-test route at [src/app/asr-smoke.tsx](src/app/asr-smoke.tsx) — visit `/asr-smoke` to validate the Whisper + mic plumbing in isolation.
+
 ## Layout
 
 ```
@@ -56,8 +83,8 @@ src/
   app/                    expo-router screens
     (onboarding)/         welcome → info → auth → profile-setup → goals → notifications
     (tabs)/               main app tabs (todo, calendar)
-    voice-chat.tsx        voice planning modal route
-    _layout.tsx           root layout
+    asr-smoke.tsx         standalone Whisper streaming smoke-test screen
+    _layout.tsx           root layout — calls initExecutorch() here
     index.tsx             session/profile-aware redirect
   backend/                Supabase client, auth helpers, profiles service
     supabase.ts           single shared client (uses expo-secure-store for tokens)
@@ -65,23 +92,28 @@ src/
     onboarding-auth.ts    signUp / signIn / verifyOtp / persistSession
     profiles.ts           getProfile / updateProfile
   features/
+    agent/                voice session orchestrator (Whisper + VAD + WS)
+      hooks/              use-agent-session
+      lib/                pcm-stream, whisper-asr, vad, agent-ws
+      components/         listening-overlay, feedback-band, edge-glow, transcript-stream
+      context/            agent-session-context
     onboarding/           feature-sliced: screens, components, context
     todo/                 screens, components, context, api/, smart-drop, types
     calendar/             screens, components, utils
     profile/              screens
-  services/               cross-feature service helpers (transcribe)
-  components/             shared UI primitives (themed-text, themed-view, floating-tab-bar, ui/icon-symbol)
+  components/             shared UI primitives (themed-text, themed-view, floating-mic, ui/icon-symbol)
   constants/              theme tokens
   hooks/                  shared hooks (use-color-scheme, use-theme-color, color-scheme-override)
   types/                  shared TS types (database, svg.d.ts)
   assets/                 icons, splash, illustrations
 supabase/
   migrations/             SQL migrations (apply via dashboard or db push)
-backend/                  Node/Express helper service (proxy-ics, plan-day)
-app.json                  Expo config
+backend/                  Node/Express agent server (WS agent session, ICS proxy)
+app.json                  Expo config — expo-build-properties pins iOS 17 / Android 13
+ios/, android/            generated by `expo prebuild` — committed for dev-client builds
 ```
 
-Convention: feature-specific code lives in [src/features/](src/features/) (including each feature's `api/`); shared code lives in [src/components/](src/components/), [src/hooks/](src/hooks/), [src/backend/](src/backend/), [src/services/](src/services/).
+Convention: feature-specific code lives in [src/features/](src/features/) (including each feature's `api/`); shared code lives in [src/components/](src/components/), [src/hooks/](src/hooks/), [src/backend/](src/backend/).
 
 ## Auth flow (current)
 
@@ -99,10 +131,10 @@ The "Confirm signup" email template in Supabase **must** use `{{ .Token }}` (the
 
 | Script | What it does |
 | --- | --- |
-| `npm run dev` | Start Metro + Expo CLI |
-| `npm run ios` | Start Metro targeting iOS Simulator |
-| `npm run android` | Start Metro targeting Android emulator/device |
-| `npm run web` | Start Metro targeting the browser |
+| `npm run dev` / `npm run start` | Start Metro in dev-client mode (assumes dev client already installed) |
+| `npm run ios` | Build + install the iOS dev client, then start Metro |
+| `npm run android` | Build + install the Android dev client, then start Metro |
+| `npm run web` | Start Metro targeting the browser (voice features disabled on web) |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run doctor` | `expo-doctor` sanity check |
 | `npm run lint` | Expo ESLint |
@@ -110,7 +142,9 @@ The "Confirm signup" email template in Supabase **must** use `{{ .Token }}` (the
 
 ## Tech
 
-- Expo SDK 54, React Native 0.81, React 19, TypeScript
+- Expo SDK 54, React Native 0.81, React 19, TypeScript, New Architecture
 - `expo-router` for navigation
 - Supabase (`@supabase/supabase-js`) for auth + Postgres
 - `expo-secure-store` for token persistence
+- **Voice**: [react-native-executorch](https://github.com/software-mansion/react-native-executorch) (Whisper Tiny EN Quantized, on-device) + [react-native-live-audio-stream](https://github.com/iamtraction/react-native-live-audio-stream) (16 kHz int16 PCM mic capture)
+- **Agent reasoning**: Google Gemini 2.5 Flash, called from the backend after the on-device transcript is shipped over WS

@@ -13,7 +13,7 @@ import { FeedbackBand } from './feedback-band';
 const EXIT_HOLD_MS = 650;
 
 export function ListeningOverlay() {
-  const { phase, transcript, amplitude, taskToasts, actionsCompleted } =
+  const { phase, transcript, amplitude, taskToasts, actionsCompleted, downloadProgress } =
     useAgentSessionCtx();
 
   // Initial moment uses the longer phrasing; subsequent listens drop the
@@ -21,7 +21,9 @@ export function ListeningOverlay() {
   // mic is still hot rather than a turn-taking prompt.
   const listeningHint = actionsCompleted > 0 ? 'Listening…' : "I'm listening…";
 
-  const active = phase !== 'idle';
+  // 'loading' is the cold-start model warm-up phase; the overlay stays hidden
+  // for it (the FloatingMic surfaces the loading state via its own affordance).
+  const active = phase !== 'idle' && phase !== 'loading';
 
   // Hold the overlay mounted briefly after going inactive so the children's
   // opacity-fade animations can complete before the View unmounts.
@@ -50,10 +52,11 @@ export function ListeningOverlay() {
 
   if (!active && !holding) return null;
 
-  // Status line shown beneath the transcript. Always present while active so
-  // the user has a single source of truth for what the agent is currently
-  // doing. (Old behavior — hide hint when transcript exists — left a stale
-  // "I'm listening…" up while STT was actually running on the server.)
+  // With local streaming ASR the growing transcript itself is the listening
+  // indicator. Showing "I'm listening…" beside the user's own words being
+  // typed is double-signaling, so we suppress the hint during `listening` once
+  // any transcript text exists. Hint returns between utterances (transcript
+  // gets cleared on tool_result for mutations).
   const hint = !active
     ? null
     : phase === 'connecting'
@@ -63,8 +66,13 @@ export function ListeningOverlay() {
         : phase === 'thinking'
           ? 'Thinking…'
           : phase === 'listening'
-            ? listeningHint
+            ? transcript.length > 0
+              ? null
+              : listeningHint
             : null;
+  // Suppress the unused-var warning while keeping downloadProgress in the
+  // destructure for future loading affordances.
+  void downloadProgress;
 
   return (
     <View style={StyleSheet.absoluteFillObject} pointerEvents="box-none">

@@ -13,17 +13,16 @@ type State = 'silent' | 'candidate_speech' | 'speaking' | 'candidate_silent';
 const INITIAL_FLOOR_DB = -55;
 
 export function createVad(cfg?: VadConfig) {
-  // Tuned against real-device data: ambient noise on a phone often spikes
-  // back to -25..-30 dB within ~500ms after the user stops talking. The
-  // original 700ms silence window meant those spikes reset the timer before
-  // speech_end could fire, leaving the session stuck on "listening". 400ms
-  // is short enough to fire before the typical post-utterance spike but long
-  // enough to ride out natural mid-sentence pauses. Wider hysteresis (8 vs
-  // 4 dB) makes ambient blips less likely to register as new speech.
-  const silenceMs = cfg?.silenceMs ?? 400;
-  const minSpeechMs = cfg?.minSpeechMs ?? 250;
+  // Tuned against real-device + Whisper streaming. Whisper Tiny needs ~2s of
+  // audio context to produce a stable transcript; cutting it off after only
+  // 400ms of silence handed it sub-1s clips that came back empty. 900ms
+  // silence + 400ms minSpeech rides out natural breath/word pauses without
+  // letting the user feel laggy. Hysteresis widened to 10dB to suppress the
+  // ambient blips that previously oscillated speech_start.
+  const silenceMs = cfg?.silenceMs ?? 1200;
+  const minSpeechMs = cfg?.minSpeechMs ?? 400;
   const floorRise = cfg?.noiseFloorRise ?? 0.05;
-  const hysteresisDb = cfg?.hysteresisDb ?? 8;
+  const hysteresisDb = cfg?.hysteresisDb ?? 10;
 
   let noiseFloor = INITIAL_FLOOR_DB;
   let state: State = 'silent';

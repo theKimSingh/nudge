@@ -49,3 +49,7 @@ backend/__pycache__
 backend/venv
 backend/.env
 .vercel
+
+# Bundled Whisper model (fetch via npm run fetch-model)
+src/assets/models/*.pte
+src/assets/models/*.bin

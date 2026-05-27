@@ -93,7 +93,12 @@ function ringPath(
 export function FloatingMic() {
   const insets = useSafeAreaInsets();
   const agent = useAgentSessionCtx();
-  const agentActive = agent.phase !== 'idle';
+  // 'loading' (model warming on cold start) and 'idle' are both inactive
+  // states from the button's perspective — neither should render the
+  // halo/edge-glow.
+  const agentActive =
+    agent.phase !== 'idle' && agent.phase !== 'loading';
+  const modelLoading = agent.phase === 'loading';
   const scheme = useColorScheme() ?? 'light';
   const palette = Colors[scheme];
   const isDark = scheme === 'dark';
@@ -107,8 +112,14 @@ export function FloatingMic() {
   const dateKey = `${todayDate.getFullYear()}-${String(todayDate.getMonth() + 1).padStart(2, '0')}-${String(todayDate.getDate()).padStart(2, '0')}`;
 
   const onMicPress = () => {
+    if (modelLoading) return; // model not ready yet; tap is a no-op
+    if (__DEV__) {
+      console.log(
+        `[floating-mic] onMicPress phase=${agent.phase} agentActive=${agentActive}`,
+      );
+    }
     if (agentActive) {
-      void agent.stop();
+      void agent.stop('mic_button_tap');
     } else {
       void agent.start(dateKey);
     }
