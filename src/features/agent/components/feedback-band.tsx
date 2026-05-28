@@ -158,13 +158,13 @@ const styles = StyleSheet.create({
   transcriptSlot: {
     width: '100%',
     alignItems: 'center',
-    // Hard ceiling so a runaway transcript can't push the band off the
-    // top of the screen. TranscriptStream also self-trims via MAX_TOKENS,
-    // but this clips any leftover overflow as the absolute backstop.
-    // Tokens that don't fit get clipped from the bottom (newer tokens at
-    // the bottom of the wrap) — acceptable since they'll fade out within
-    // a few seconds anyway.
-    maxHeight: 96,
+    // Bottom-anchor the wrapped transcript so the NEWEST lines sit just above
+    // the hint and stay fully visible; older lines grow upward. maxHeight is a
+    // soft ceiling for ~5-6 lines — anything taller clips from the TOP (oldest),
+    // which TranscriptStream's position fade has already dimmed to near-zero, so
+    // the clip is imperceptible and the band can't run off the top of the screen.
+    justifyContent: 'flex-end',
+    maxHeight: 150,
     overflow: 'hidden',
     // Same shadow-buffer reasoning as chipStack — the transcript token
     // textShadowRadius (8) plus the hint textShadowRadius (10) can't

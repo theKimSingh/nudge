@@ -12,6 +12,9 @@ config.resolver.assetExts = config.resolver.assetExts.filter(
 
 config.resolver.sourceExts.push('svg');
 
-config.resolver.assetExts.push('pte', 'bin');
+// 'pte'/'bin': Whisper (executorch) model + tokenizer.
+// 'bz2': the bundled Moonshine .tar.bz2 archive, require()'d in moonshine-asr.ts
+// and extracted to DocumentDirectory on first launch.
+config.resolver.assetExts.push('pte', 'bin', 'bz2');
 
 module.exports = config;

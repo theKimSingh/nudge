@@ -22,13 +22,14 @@ import { uuidv4 } from '@/src/lib/uuid';
 import type { TaskCategory } from '@/src/types/database';
 
 import { connectAgentWs, type ServerEvent } from '../lib/agent-ws';
+import { useActiveAsrStream } from '../lib/asr-engine';
 import { createPcmStream } from '../lib/pcm-stream';
 import { createVad } from '../lib/vad';
-import { cleanTranscript, useWhisperStream } from '../lib/whisper-asr';
+import { cleanTranscript } from '../lib/whisper-asr';
 
 export type AgentSessionPhase =
   | 'idle'
-  // Whisper is downloading / warming on first launch. Mic is locked until
+  // ASR model is downloading / warming on first launch. Mic is locked until
   // isReady flips true.
   | 'loading'
   | 'connecting'
@@ -76,7 +77,7 @@ export type UseAgentSessionResult = {
   idlePromptVisible: boolean;
   taskToasts: TaskToast[];
   actionsCompleted: number;
-  /** 0-1, Whisper model download progress on cold start. */
+  /** 0-1, ASR model acquisition progress on cold start. */
   downloadProgress: number;
   /** True once the on-device ASR model is warm and ready to record. */
   asrReady: boolean;
@@ -132,19 +133,21 @@ async function requestMicPermission(): Promise<{ granted: boolean; canAskAgain: 
 export function useAgentSession(): UseAgentSessionResult {
   const { applyServerInsert, applyServerUpdate, applyServerDelete } = useTasks();
 
-  // On-device ASR hook. Mounts once for the lifetime of the session provider;
-  // the model downloads on first cold start (~75MB Whisper Tiny EN quantized,
-  // cached after) and exposes a generator API for streaming partials.
+  // On-device ASR hook (engine chosen by ASR_ENGINE in asr-engine.ts). Mounts
+  // once for the lifetime of the session provider and exposes a generator API
+  // for streaming partials. Moonshine downloads its model on first cold start
+  // (~239MB, cached after); Whisper Base is bundled. Either way isReady flips
+  // true once the model is warm and downloadProgress tracks acquisition.
   //
-  // IMPORTANT: useSpeechToText returns a FRESH object every render (no
-  // memoization in the executorch hook). Reading `whisper` directly inside
-  // useCallback / useEffect dependency arrays would make those callbacks
-  // unstable, causing cleanup effects to re-fire on every render — which
-  // manifests as the session opening + immediately sending cancel_session in
-  // a loop. We mirror through whisperRef so dependent callbacks stay stable.
-  const whisper = useWhisperStream();
-  const whisperRef = useRef(whisper);
-  whisperRef.current = whisper;
+  // IMPORTANT: the hook returns a FRESH object every render (no memoization).
+  // Reading `asr` directly inside useCallback / useEffect dependency arrays
+  // would make those callbacks unstable, causing cleanup effects to re-fire on
+  // every render — which manifests as the session opening + immediately sending
+  // cancel_session in a loop. We mirror through asrRef so dependent callbacks
+  // stay stable.
+  const asr = useActiveAsrStream();
+  const asrRef = useRef(asr);
+  asrRef.current = asr;
 
   const [phase, setPhase] = useState<AgentSessionPhase>('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -200,12 +203,12 @@ export function useAgentSession(): UseAgentSessionResult {
   // model is downloading on first launch we surface "Loading speech model…"
   // so the user knows why the mic is unresponsive.
   useEffect(() => {
-    if (!whisper.isReady && phaseRef.current === 'idle') {
+    if (!asr.isReady && phaseRef.current === 'idle') {
       setPhase('loading');
-    } else if (whisper.isReady && phaseRef.current === 'loading') {
+    } else if (asr.isReady && phaseRef.current === 'loading') {
       setPhase('idle');
     }
-  }, [whisper.isReady]);
+  }, [asr.isReady]);
 
   const clearIdleTimers = useCallback(() => {
     if (idleSoftTimerRef.current) {
@@ -241,6 +244,22 @@ export function useAgentSession(): UseAgentSessionResult {
         // ignored
       }
     }
+
+    // Terminate the ASR streaming generator and drain it. The Moonshine adapter's
+    // stream() loops until streamStop() is called; without this, turning the mic
+    // off mid-listening (no speech_end) leaves the generator running with an
+    // unresolved promise — the next start() then hangs awaiting it and the old
+    // transcript bleeds into the new session.
+    try {
+      asrRef.current?.streamStop();
+    } catch {
+      // ignored
+    }
+    if (streamIterationPromiseRef.current) {
+      await streamIterationPromiseRef.current.catch(() => {});
+      streamIterationPromiseRef.current = null;
+    }
+
     if (ws) {
       try {
         ws.send({ type: 'cancel_session' });
@@ -263,7 +282,7 @@ export function useAgentSession(): UseAgentSessionResult {
     try {
       await teardown();
       taskChangesRef.current = 0;
-      setPhase(whisperRef.current?.isReady ? 'idle' : 'loading');
+      setPhase(asrRef.current?.isReady ? 'idle' : 'loading');
       setTranscript('');
       setErrorMessage(null);
       setIdlePromptVisible(false);
@@ -524,7 +543,7 @@ export function useAgentSession(): UseAgentSessionResult {
       await streamIterationPromiseRef.current.catch(() => {});
     }
     liveTranscriptHighWaterRef.current = '';
-    const w = whisperRef.current;
+    const w = asrRef.current;
     if (!w) return;
     let gen;
     try {
@@ -570,17 +589,17 @@ export function useAgentSession(): UseAgentSessionResult {
         return;
       }
 
-      const w = whisperRef.current;
+      const w = asrRef.current;
       if (!w?.isReady) {
         setPhase('loading');
         if (__DEV__) {
           console.warn(
-            `[agent] whisper not ready, downloadProgress=${w?.downloadProgress ?? 0}`,
+            `[agent] asr not ready, downloadProgress=${w?.downloadProgress ?? 0}`,
           );
         }
         return;
       }
-      if (__DEV__) console.log('[agent] whisper ready, proceeding');
+      if (__DEV__) console.log('[agent] asr ready, proceeding');
 
       setErrorMessage(null);
       setTranscript('');
@@ -657,7 +676,7 @@ export function useAgentSession(): UseAgentSessionResult {
 
             // Feed Whisper's streaming generator for live partials.
             try {
-              whisperRef.current?.streamInsert(e.samples);
+              asrRef.current?.streamInsert(e.samples);
             } catch (err: any) {
               if (__DEV__) console.warn('[agent] streamInsert failed:', err?.message);
             }
@@ -687,7 +706,7 @@ export function useAgentSession(): UseAgentSessionResult {
               // generator; the iteration's last yields land the complete text.
               const streamedSnapshot = liveTranscriptHighWaterRef.current;
               try {
-                whisperRef.current?.streamStop();
+                asrRef.current?.streamStop();
               } catch {
                 // ignored
               }
@@ -835,8 +854,8 @@ export function useAgentSession(): UseAgentSessionResult {
     idlePromptVisible,
     taskToasts,
     actionsCompleted,
-    downloadProgress: whisper.downloadProgress,
-    asrReady: whisper.isReady,
+    downloadProgress: asr.downloadProgress,
+    asrReady: asr.isReady,
     start,
     stop,
     clientUndo,

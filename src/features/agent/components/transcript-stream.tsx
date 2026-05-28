@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
-import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
+import Animated, { FadeIn } from 'react-native-reanimated';
 
 import { Fonts } from '@/src/constants/theme';
 import { useColorScheme } from '@/src/hooks/use-color-scheme';
@@ -16,12 +16,23 @@ type Token = {
   bornAt: number;
 };
 
-// Cap the live transcript at ~2-3 wrapped lines so a long dictation
-// ("So today I want to do X, Y, then Z, and …") doesn't push the
-// feedback-band off the top of the screen. Older words still self-trim
-// via the lifetime expiry, but this is the hard upper bound.
-const MAX_TOKENS = 14;
-const DEFAULT_LIFETIME_MS = 4500;
+// Keep enough words for ~5-6 wrapped lines. The newest ~2 lines render at full
+// opacity; older lines ramp fainter (but stay visible), and feedback-band's
+// bottom-anchored slot clips anything past the ceiling — by which point the
+// fade has already dimmed it to near-zero. Lifetime is generous so a growing
+// utterance doesn't lose its start mid-sentence; it dissolves a while after the
+// user stops speaking.
+const MAX_TOKENS = 30;
+const DEFAULT_LIFETIME_MS = 8000;
+
+// Position-based fade. `rank` counts back from the newest token (0 = newest).
+// The newest FULL_RECENT_TOKENS words (~2 lines) stay at FULL_ALPHA; every older
+// line drops PER_LINE_FADE, floored at FAINT_FLOOR so it remains readable.
+const FULL_ALPHA = 0.95;
+const FAINT_FLOOR = 0.28;
+const FULL_RECENT_TOKENS = 9; // ≈ 2 wrapped lines
+const TOKENS_PER_LINE = 5;
+const PER_LINE_FADE = 0.22;
 
 export function TranscriptStream({ text, tokenLifetimeMs = DEFAULT_LIFETIME_MS }: Props) {
   const scheme = useColorScheme() ?? 'light';
@@ -92,18 +103,25 @@ export function TranscriptStream({ text, tokenLifetimeMs = DEFAULT_LIFETIME_MS }
 
   return (
     <View style={styles.container} pointerEvents="none">
-      {tokens.map((token) => {
+      {tokens.map((token, i) => {
         const ageMs = now - token.bornAt;
         const remaining = tokenLifetimeMs - ageMs;
-        const lifeAlpha = Math.max(
-          0.55,
-          Math.min(0.95, 1 - ageMs / tokenLifetimeMs),
+        // Position fade: how many lines this token sits above the bright zone.
+        const rank = tokens.length - 1 - i; // 0 = newest
+        const linesAbove =
+          rank < FULL_RECENT_TOKENS
+            ? 0
+            : Math.floor((rank - FULL_RECENT_TOKENS) / TOKENS_PER_LINE) + 1;
+        const positionAlpha = Math.max(
+          FAINT_FLOOR,
+          FULL_ALPHA - linesAbove * PER_LINE_FADE,
         );
+        // Final dissolve over the last fadeOutWindowMs of a token's life.
         const exitAlpha =
           remaining < fadeOutWindowMs
             ? Math.max(0, remaining / fadeOutWindowMs)
             : 1;
-        const alpha = lifeAlpha * exitAlpha;
+        const alpha = positionAlpha * exitAlpha;
         return (
           <Animated.Text
             key={token.id}
