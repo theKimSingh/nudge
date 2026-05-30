@@ -10,22 +10,26 @@ import {
   StyleSheet,
   View,
 } from 'react-native';
+import Reanimated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/src/components/themed-text';
+import { GlassSurface } from '@/src/components/ui/glass-surface';
 import { IconSymbol } from '@/src/components/ui/icon-symbol';
 import { Colors } from '@/src/constants/theme';
 import { useColorScheme } from '@/src/hooks/use-color-scheme';
+import { GhostTaskRow } from '@/src/features/todo/components/ghost-task-row';
+import { SectionHeader } from '@/src/features/todo/components/section-header';
 import {
   SortableList,
   type RenderItemArgs,
 } from '@/src/features/todo/components/sortable-list';
+import { SwipeableRow } from '@/src/features/todo/components/swipeable-row';
 import { TaskFormModal } from '@/src/features/todo/components/task-form-modal';
 import { TaskRow } from '@/src/features/todo/components/task-row';
 import { useTasks } from '@/src/features/todo/context/tasks-context';
 import { rescheduleSection } from '@/src/features/todo/smart-drop';
 import {
-  SECTION_LABELS,
   SECTION_ORDER,
   deriveSection,
   expandRepeatDates,
@@ -94,9 +98,11 @@ export function DayDetailSheet({ visible, dateKey, onClose }: Props) {
     replaceTasksForDate,
   } = useTasks();
 
-  const [editing, setEditing] = useState(false);
   const [formOpen, setFormOpen] = useState(false);
   const [editTaskId, setEditTaskId] = useState<string | null>(null);
+  const [collapsedSections, setCollapsedSections] = useState<
+    Record<TaskSection, boolean>
+  >({ morning: false, afternoon: false, evening: false });
   const [mounted, setMounted] = useState(false);
 
   const opacity = useRef(new Animated.Value(0)).current;
@@ -128,7 +134,6 @@ export function DayDetailSheet({ visible, dateKey, onClose }: Props) {
     }
 
     if (!visible && wasVisible) {
-      setEditing(false);
       Animated.parallel([
         Animated.timing(opacity, {
           toValue: 0,
@@ -160,6 +165,9 @@ export function DayDetailSheet({ visible, dateKey, onClose }: Props) {
       evening: [],
     };
     for (const t of tasks) out[deriveSection(t.time_minutes)].push(t);
+    for (const sec of SECTION_ORDER) {
+      out[sec].sort((a, b) => a.time_minutes - b.time_minutes);
+    }
     return out;
   }, [tasks]);
 
@@ -167,6 +175,7 @@ export function DayDetailSheet({ visible, dateKey, onClose }: Props) {
     const items: ListItem[] = [];
     for (const section of SECTION_ORDER) {
       items.push({ type: 'header', section, key: `h-${section}` });
+      if (collapsedSections[section]) continue;
       if (grouped[section].length === 0) {
         items.push({ type: 'placeholder', section, key: `p-${section}` });
       } else {
@@ -176,7 +185,7 @@ export function DayDetailSheet({ visible, dateKey, onClose }: Props) {
       }
     }
     return items;
-  }, [grouped]);
+  }, [grouped, collapsedSections]);
 
   function openAdd() {
     setEditTaskId(null);
@@ -241,44 +250,42 @@ export function DayDetailSheet({ visible, dateKey, onClose }: Props) {
     const droppedItem = data[to];
     if (droppedItem.type !== 'task') return;
 
-    let droppedSection: TaskSection = 'morning';
-    let positionInSection = 0;
-    let currentSection: TaskSection = 'morning';
-    let countInSection = 0;
+    let destSection: TaskSection = 'morning';
+    let posInDest = 0;
+    let cur: TaskSection = 'morning';
+    let countInCur = 0;
     for (let i = 0; i < data.length; i++) {
       const item = data[i];
       if (item.type === 'header') {
-        currentSection = item.section;
-        countInSection = 0;
-      } else if (item.type === 'placeholder') {
-        // skip
-      } else {
+        cur = item.section;
+        countInCur = 0;
+      } else if (item.type === 'task') {
         if (i === to) {
-          droppedSection = currentSection;
-          positionInSection = countInSection;
+          destSection = cur;
+          posInDest = countInCur;
         }
-        countInSection++;
+        countInCur++;
       }
+    }
+
+    if (collapsedSections[destSection]) {
+      posInDest = grouped[destSection].length;
     }
 
     const groupedNew: Record<TaskSection, Task[]> = {
-      morning: [],
-      afternoon: [],
-      evening: [],
+      morning: [...grouped.morning],
+      afternoon: [...grouped.afternoon],
+      evening: [...grouped.evening],
     };
-    let cs: TaskSection = 'morning';
-    for (const item of data) {
-      if (item.type === 'header') {
-        cs = item.section;
-      } else if (item.type === 'task') {
-        groupedNew[cs].push(item.task);
-      }
-    }
-
-    groupedNew[droppedSection] = rescheduleSection(
-      groupedNew[droppedSection],
-      droppedSection,
-      positionInSection,
+    const fromSection = deriveSection(droppedItem.task.time_minutes);
+    groupedNew[fromSection] = groupedNew[fromSection].filter(
+      (t) => t.id !== droppedItem.task.id,
+    );
+    groupedNew[destSection].splice(posInDest, 0, droppedItem.task);
+    groupedNew[destSection] = rescheduleSection(
+      groupedNew[destSection],
+      destSection,
+      posInDest,
     );
 
     const next: Task[] = [];
@@ -385,46 +392,54 @@ export function DayDetailSheet({ visible, dateKey, onClose }: Props) {
 
   const editingTask = editTaskId ? tasks.find((t) => t.id === editTaskId) ?? null : null;
 
-  const renderItem = ({ item, drag, isActive }: RenderItemArgs<ListItem>) => {
+  const renderItem = ({ item, isActive }: RenderItemArgs<ListItem>) => {
     if (item.type === 'header') {
       return (
-        <View style={styles.section}>
-          <ThemedText
-            type="sen-caption-bold"
-            lightColor={Colors.light.textMuted}
-            darkColor={Colors.dark.textMuted}
-            style={styles.sectionLabel}
-          >
-            {SECTION_LABELS[item.section].toUpperCase()}
-          </ThemedText>
-        </View>
+        <SectionHeader
+          section={item.section}
+          count={grouped[item.section].length}
+          collapsed={collapsedSections[item.section]}
+          onToggle={() =>
+            setCollapsedSections((c) => ({
+              ...c,
+              [item.section]: !c[item.section],
+            }))
+          }
+        />
       );
     }
     if (item.type === 'placeholder') {
       return (
-        <ThemedText
-          type="sen-body"
-          lightColor={Colors.light.textDisabled}
-          darkColor={Colors.dark.textDisabled}
-          style={styles.sectionEmpty}
+        <Reanimated.View
+          entering={FadeIn.duration(280)}
+          exiting={FadeOut.duration(280)}
         >
-          Nothing yet
-        </ThemedText>
+          <GhostTaskRow section={item.section} onPress={openAdd} />
+        </Reanimated.View>
       );
     }
     return (
-      <TaskRow
-        title={item.task.title}
-        time={formatTimeRange(item.task.time_minutes, item.task.duration_minutes)}
-        duration={formatDurationCompact(item.task.duration_minutes)}
-        done={item.task.done}
-        category={item.task.category}
-        isDragging={isActive}
-        disabled={editing}
-        onToggle={() => {
-          void handleToggleTask(item.task.id);
-        }}
-      />
+      <Reanimated.View
+        entering={FadeIn.duration(280)}
+        exiting={FadeOut.duration(280)}
+      >
+        <SwipeableRow
+          onDelete={() => confirmDeleteTask(item.task)}
+          enabled={!isActive}
+        >
+          <TaskRow
+            title={item.task.title}
+            time={formatTimeRange(item.task.time_minutes, item.task.duration_minutes)}
+            duration={formatDurationCompact(item.task.duration_minutes)}
+            done={item.task.done}
+            category={item.task.category}
+            isDragging={isActive}
+            onToggle={() => {
+              void handleToggleTask(item.task.id);
+            }}
+          />
+        </SwipeableRow>
+      </Reanimated.View>
     );
   };
 
@@ -468,19 +483,7 @@ export function DayDetailSheet({ visible, dateKey, onClose }: Props) {
             {dateKey ? formatDateLabel(dateKey) : ''}
           </ThemedText>
           <View style={styles.actions}>
-            <SheetIconButton
-              icon="pencil"
-              label={editing ? 'Done editing' : 'Edit'}
-              active={editing}
-              onPress={() => setEditing((v) => !v)}
-              palette={palette}
-            />
-            <SheetIconButton
-              icon="plus"
-              label="Add task"
-              onPress={openAdd}
-              palette={palette}
-            />
+            <GlassAddButton onPress={openAdd} palette={palette} />
           </View>
         </View>
 
@@ -491,7 +494,10 @@ export function DayDetailSheet({ visible, dateKey, onClose }: Props) {
             onDragEnd={handleDragEnd}
             renderItem={renderItem}
             canDrag={canDrag}
-            activationDistance={editing ? 8 : 1000}
+            onItemTap={(item) => {
+              if (item.type === 'task') openEdit(item.task.id);
+            }}
+            activationDistance={8}
             contentContainerStyle={styles.scrollContent}
           />
         </View>
@@ -502,43 +508,36 @@ export function DayDetailSheet({ visible, dateKey, onClose }: Props) {
         initialTask={editingTask}
         onClose={closeForm}
         onSave={saveTask}
+        onDelete={editingTask ? () => confirmDeleteTask(editingTask) : undefined}
       />
     </Modal>
   );
 }
 
-function SheetIconButton({
-  icon,
-  label,
+function GlassAddButton({
   onPress,
   palette,
-  active,
 }: {
-  icon: 'pencil' | 'plus';
-  label: string;
   onPress: () => void;
   palette: typeof Colors.light;
-  active?: boolean;
 }) {
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      accessibilityState={{ selected: active }}
-      onPress={onPress}
-      hitSlop={6}
-      style={({ pressed }) => [
-        styles.actionButton,
-        { backgroundColor: active ? palette.buttonFill : palette.surface },
-        pressed && { opacity: 0.7 },
-      ]}
-    >
-      <IconSymbol
-        name={icon}
-        size={18}
-        color={active ? palette.buttonLabel : palette.surfaceText}
-      />
-    </Pressable>
+    <View style={styles.actionButton}>
+      <GlassSurface tint="regular" interactive scheme="auto" style={styles.actionGlass}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Add task"
+          onPress={onPress}
+          hitSlop={6}
+          style={({ pressed }) => [
+            styles.actionPress,
+            { transform: [{ scale: pressed ? 0.94 : 1 }] },
+          ]}
+        >
+          <IconSymbol name="plus" size={18} color={palette.surfaceText} />
+        </Pressable>
+      </GlassSurface>
+    </View>
   );
 }
 
@@ -555,7 +554,6 @@ const styles = StyleSheet.create({
     maxHeight: SCREEN_HEIGHT * 0.85,
     borderTopLeftRadius: 28,
     borderTopRightRadius: 28,
-    paddingHorizontal: 24,
     paddingTop: 10,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: -6 },
@@ -576,6 +574,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     marginBottom: 12,
+    paddingHorizontal: 24,
   },
   headerTitle: {
     flex: 1,
@@ -585,31 +584,31 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   actionButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 10,
+    elevation: 4,
+  },
+  actionGlass: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    overflow: 'hidden',
+  },
+  actionPress: {
+    width: 44,
+    height: 44,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 6,
-    elevation: 3,
   },
   listWrap: {
     height: SCREEN_HEIGHT * 0.55,
   },
   scrollContent: {
     paddingBottom: 32,
-  },
-  section: {
-    paddingTop: 12,
-  },
-  sectionLabel: {
-    paddingBottom: 4,
-    letterSpacing: 0.6,
-  },
-  sectionEmpty: {
-    paddingVertical: 12,
   },
 });

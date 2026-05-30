@@ -14,12 +14,8 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import 'react-native-reanimated';
-import { initExecutorch } from 'react-native-executorch';
-import { ExpoResourceFetcher } from 'react-native-executorch-expo-resource-fetcher';
 import { AgentSessionProvider } from '../features/agent/context/agent-session-context';
 import { TasksProvider } from '../features/todo/context/tasks-context';
-
-initExecutorch({ resourceFetcher: ExpoResourceFetcher });
 
 SplashScreen.preventAutoHideAsync();
 

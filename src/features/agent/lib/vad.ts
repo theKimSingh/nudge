@@ -10,19 +10,27 @@ export type VadConfig = {
 
 type State = 'silent' | 'candidate_speech' | 'speaking' | 'candidate_silent';
 
-const INITIAL_FLOOR_DB = -55;
+const INITIAL_FLOOR_DB = -60;
 
 export function createVad(cfg?: VadConfig) {
-  // Tuned against real-device + Whisper streaming. Whisper Tiny needs ~2s of
-  // audio context to produce a stable transcript; cutting it off after only
-  // 400ms of silence handed it sub-1s clips that came back empty. 900ms
-  // silence + 400ms minSpeech rides out natural breath/word pauses without
-  // letting the user feel laggy. Hysteresis widened to 10dB to suppress the
-  // ambient blips that previously oscillated speech_start.
-  const silenceMs = cfg?.silenceMs ?? 1200;
+  // Device-independent voice gating. We never use an absolute dB threshold —
+  // mic sensitivity + OS AGC make the same sound read differently on every
+  // phone. Instead we track the room's noise floor live (per device, per
+  // environment) and require speech to clear it by `hysteresisDb`.
+  //
+  // The margin works because the user speaks INTO the phone (near-field), so
+  // their voice lands ~20-35 dB above ambient, while background noise sits near
+  // the floor. A 16 dB margin drops the trigger into that gap: above typical
+  // background, below near-field speech — and since it's relative to the
+  // measured floor, it self-calibrates on any device/room. (The old 10 dB was
+  // too low, so a TV / nearby talker cleared it and registered as speech.)
+  //
+  // silenceMs 1800: wait out natural mid-plan pauses/stutters instead of
+  // shipping a fragment. minSpeechMs 400: reject transient clicks/taps.
+  const silenceMs = cfg?.silenceMs ?? 1800;
   const minSpeechMs = cfg?.minSpeechMs ?? 400;
   const floorRise = cfg?.noiseFloorRise ?? 0.05;
-  const hysteresisDb = cfg?.hysteresisDb ?? 10;
+  const hysteresisDb = cfg?.hysteresisDb ?? 16;
 
   let noiseFloor = INITIAL_FLOOR_DB;
   let state: State = 'silent';

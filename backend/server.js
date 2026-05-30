@@ -177,6 +177,15 @@ async function runAgentSegment({ session, transcript, history, systemPrompt, sig
   }
   if (!stoppedReason) stoppedReason = 'max_iterations';
 
+  // Guarantee the client always gets closure. A turn that ended without calling
+  // done() and without running any tool (no_calls — the model replied with bare
+  // text/a question instead of acting) leaves `summary` empty; with no summary
+  // event the app's stale transcript never clears and "I'm listening…" never
+  // returns. Emit a fallback so every segment resolves with visible feedback.
+  if ((summary == null || summary.trim() === '') && toolsExecuted === 0) {
+    summary = "Sorry, I couldn't process that — try saying it as a specific action.";
+  }
+
   console.log(`[agent] ◼ seg=${session.segId} stopped=${stoppedReason} in ${Date.now() - segStart}ms tools=${toolsExecuted}${summary ? ` summary="${summary.slice(0, 100)}"` : ''}`);
   emit({ type: 'agent_done', seg_id: session.segId });
   if (summary != null) emit({ type: 'summary', text: summary });
@@ -521,6 +530,16 @@ async function runSessionLoop(session, source) {
       console.error('[ws] agent loop failed:', e);
       wsSend(session.ws, { type: 'error', code: 'AGENT_FAILED', message: e.message || 'agent error' });
     }
+    // Recover cleanly so the session stays usable. Drop this segment's raw
+    // transcript and pop the dangling user turn pushed at the top of
+    // runAgentSegment (no model reply followed it) — otherwise the next
+    // utterance leaves modelHistory with two consecutive user turns, which
+    // corrupts the following request.
+    session.transcripts.length = 0;
+    const last = session.modelHistory[session.modelHistory.length - 1];
+    if (last && last.role === 'user' && last.parts?.[0]?.text != null) {
+      session.modelHistory.pop();
+    }
   } finally {
     session.loopRunning = false;
     session.abortCurrent = () => {};
@@ -531,10 +550,12 @@ async function runSessionLoop(session, source) {
 }
 
 async function buildPromptForSession(session) {
-  // Recompute "today" in the user's tz on every loop so a session that spans
-  // midnight tells the model the correct day. session.date stays as the
-  // initial focus date (drives the ±3d task window below).
-  const target_date = new Intl.DateTimeFormat('en-CA', { timeZone: session.tz }).format(new Date());
+  // Plan for the day the user is viewing in the todo tab (session.date, sent by
+  // the client). buildSystemPrompt still computes the real "today" from tz for
+  // the Today field and relative-date math, so "tomorrow"/"tonight" and the
+  // displayed current date stay correct even when the viewed day isn't today.
+  // (Matches the REST /agent/turn path, which already uses the client date.)
+  const target_date = session.date;
   const dateMinus3 = addDays(session.date, -3);
   const datePlus3 = addDays(session.date, 3);
   const [profileQ, tasksQ, constraintsQ, inferred] = await Promise.all([

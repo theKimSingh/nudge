@@ -1,4 +1,3 @@
-import DateTimePicker from '@react-native-community/datetimepicker';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
@@ -14,11 +13,14 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { CalendarList } from 'react-native-calendars';
+import { Calendar } from 'react-native-calendars';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { ThemedText } from '@/src/components/themed-text';
+import { ThemedView } from '@/src/components/themed-view';
+import { GlassSurface } from '@/src/components/ui/glass-surface';
 import { IconSymbol } from '@/src/components/ui/icon-symbol';
-import { Colors } from '@/src/constants/theme';
+import { Colors, Fonts } from '@/src/constants/theme';
 import { useColorScheme } from '@/src/hooks/use-color-scheme';
 import { DayDetailSheet } from '@/src/features/calendar/components/day-detail-sheet';
 import {
@@ -26,16 +28,23 @@ import {
   MarkedDates,
   parseICSString,
 } from '@/src/features/calendar/utils/calendar-parser';
+import { CATEGORY_META } from '@/src/features/todo/category-meta';
+import { TaskFormModal } from '@/src/features/todo/components/task-form-modal';
 import { useTasks } from '@/src/features/todo/context/tasks-context';
-import type { RepeatRule } from '@/src/features/todo/types';
+import {
+  dateKey,
+  expandRepeatDates,
+  type RepeatRule,
+} from '@/src/features/todo/types';
 import { importICSAsTasks } from '../utils/import-ics';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
-const CALENDAR_WIDTH = SCREEN_WIDTH - 32; // matches container paddingHorizontal: 16
+const H_PADDING = 20;
+const CALENDAR_WIDTH = SCREEN_WIDTH - H_PADDING * 2;
 const DAY_WIDTH = CALENDAR_WIDTH / 7;
+const CELL_HEIGHT = 96;
 
-const BG_COLOR = '#f0f0f0';
-const TEXT_COLOR = '#000000';
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 const getLocalDateString = (date: Date) => {
   const year = date.getFullYear();
@@ -44,21 +53,19 @@ const getLocalDateString = (date: Date) => {
   return `${year}-${month}-${day}`;
 };
 
-const PASTEL_COLORS = [
-  '#fdfd96',
-  '#ffb7b2',
-  '#a2e4b8',
-  '#e2f0cb',
-  '#cbaacb',
-  '#b5ead7',
-  '#ffdac1',
-  '#9bf6ff',
-];
+// Parse a YYYY-MM-DD key in local time. `new Date('2026-05-01')` parses as UTC
+// midnight, which renders the previous month for users behind UTC — so split
+// the parts and build a local Date instead.
+const getMonthYear = (key: string) => {
+  const [y, m] = key.split('-').map(Number);
+  const date = new Date(y, m - 1, 1);
+  return { month: date.toLocaleString('default', { month: 'long' }), year: y };
+};
 
 export function CalendarScreen() {
   const scheme = useColorScheme() ?? 'light';
   const palette = Colors[scheme];
-  const { tasks, addTaskSeries } = useTasks();
+  const { tasks, addTaskInstance, addTaskSeries } = useTasks();
 
   const [url, setUrl] = useState('');
   const [importedDates, setImportedDates] = useState<MarkedDates>({});
@@ -69,17 +76,8 @@ export function CalendarScreen() {
   const [magicLoading, setMagicLoading] = useState(false);
 
   const [isImportVisible, setIsImportVisible] = useState(false);
-  const [isAddEventVisible, setIsAddEventVisible] = useState(false);
-  const [newEventTitle, setNewEventTitle] = useState('');
+  const [isAddVisible, setIsAddVisible] = useState(false);
   const [dayDetailDate, setDayDetailDate] = useState<string | null>(null);
-
-  const [startTime, setStartTime] = useState<Date>(new Date());
-  const [endTime, setEndTime] = useState<Date>(new Date(Date.now() + 3600000));
-  const [repeatFrequency, setRepeatFrequency] = useState<'none' | 'daily' | 'weekly' | 'monthly'>(
-    'none',
-  );
-  const [endRepeatDate, setEndRepeatDate] = useState<Date>(new Date(Date.now() + 86400000 * 30));
-  const [showPicker, setShowPicker] = useState<'start' | 'end' | 'repeatEnd' | null>(null);
 
   const markedDates = useMemo<MarkedDates>(() => {
     const out: MarkedDates = {};
@@ -89,8 +87,10 @@ export function CalendarScreen() {
     for (const t of tasks) {
       if (!out[t.date]) out[t.date] = { events: [] };
       out[t.date].events.push({
+        // Tie pill color to the same category schema the todo screen uses for
+        // its dots, so a task reads the same on both screens.
         title: t.title,
-        color: t.color ?? PASTEL_COLORS[t.title.length % PASTEL_COLORS.length],
+        color: CATEGORY_META[t.category]?.color ?? CATEGORY_META.other.color,
         done: t.done,
       });
     }
@@ -165,14 +165,7 @@ export function CalendarScreen() {
     }
   };
 
-  const getMonthYearString = (dateString: string) => {
-    const date = new Date(dateString);
-    const month = date.toLocaleString('default', { month: 'long' });
-    const year = date.getFullYear();
-    return { month, year };
-  };
-
-  const { month, year } = useMemo(() => getMonthYearString(currentDate), [currentDate]);
+  const { month, year } = useMemo(() => getMonthYear(currentDate), [currentDate]);
 
   const changeDate = (offset: number) => {
     const [y, m, d] = currentDate.split('-').map(Number);
@@ -181,56 +174,32 @@ export function CalendarScreen() {
     setCurrentDate(getLocalDateString(date));
   };
 
-  const handleAddEvent = () => {
-    if (!newEventTitle.trim()) {
-      Alert.alert('Error', 'Please enter an event title');
-      return;
+  function saveTask(draft: {
+    title: string;
+    time_minutes: number;
+    duration_minutes: number;
+    repeat_rule: RepeatRule;
+  }) {
+    // The header add is a quick-capture with no selected day, so it targets
+    // today — matching the modal's default time-of-now behaviour. Per-day adds
+    // happen inside the day-detail sheet.
+    const todayKey = dateKey(new Date());
+    const template = {
+      title: draft.title,
+      time_minutes: draft.time_minutes,
+      duration_minutes: draft.duration_minutes,
+      done: false,
+      repeat_rule: draft.repeat_rule,
+      source: 'todo_list' as const,
+    };
+
+    if (draft.repeat_rule === 'none') {
+      addTaskInstance({ ...template, date: todayKey });
+    } else {
+      const dates = expandRepeatDates(todayKey, draft.repeat_rule);
+      addTaskSeries(template, dates);
     }
-
-    const randomColor = PASTEL_COLORS[Math.floor(Math.random() * PASTEL_COLORS.length)];
-
-    const startMinutes = startTime.getHours() * 60 + startTime.getMinutes();
-    const endMinutes = endTime.getHours() * 60 + endTime.getMinutes();
-    const duration_minutes = Math.max(5, endMinutes - startMinutes);
-
-    const [y, m, d] = currentDate.split('-').map(Number);
-    const curr = new Date(y, m - 1, d);
-
-    const endLimit = repeatFrequency === 'none' ? curr : endRepeatDate;
-    const twoYearsFromNow = new Date();
-    twoYearsFromNow.setFullYear(twoYearsFromNow.getFullYear() + 2);
-    const safeEndLimit = endLimit > twoYearsFromNow ? twoYearsFromNow : endLimit;
-
-    const dates: string[] = [];
-    while (curr <= safeEndLimit) {
-      dates.push(getLocalDateString(curr));
-      if (repeatFrequency === 'none') break;
-      if (repeatFrequency === 'daily') curr.setDate(curr.getDate() + 1);
-      else if (repeatFrequency === 'weekly') curr.setDate(curr.getDate() + 7);
-      else if (repeatFrequency === 'monthly') curr.setMonth(curr.getMonth() + 1);
-      else break;
-    }
-
-    const repeat_rule: RepeatRule =
-      repeatFrequency === 'monthly' ? 'none' : (repeatFrequency as RepeatRule);
-
-    addTaskSeries(
-      {
-        title: newEventTitle.trim(),
-        time_minutes: startMinutes,
-        duration_minutes,
-        done: false,
-        repeat_rule,
-        color: randomColor,
-        source: 'todo_list',
-      },
-      dates,
-    );
-
-    setNewEventTitle('');
-    setRepeatFrequency('none');
-    setIsAddEventVisible(false);
-  };
+  }
 
   const [initialLoading, setInitialLoading] = useState(true);
 
@@ -251,33 +220,28 @@ export function CalendarScreen() {
   const renderDay = useCallback(
     ({ date, state }: any) => {
       const dateString = date?.dateString;
-      if (!dateString) return <View style={{ width: DAY_WIDTH, height: 100 }} />;
+      if (!dateString) return <View style={{ width: DAY_WIDTH, height: CELL_HEIGHT }} />;
 
       const isToday = state === 'today';
-      const isSelectedMonth = state !== 'disabled';
+      const isCurrentMonth = state !== 'disabled';
 
       if (initialLoading) {
         return (
-          <View style={[styles.dayCellContainer, { backgroundColor: '#e5e5e5' }]}>
+          <View style={[styles.dayCell, { borderColor: palette.border }]}>
             <View
-              style={{
-                width: 20,
-                height: 20,
-                borderRadius: 10,
-                backgroundColor: '#d0d0d0',
-                marginBottom: 6,
-              }}
+              style={[styles.skelDate, { backgroundColor: palette.bgTertiary }]}
             />
             <View
-              style={{ width: '80%', height: 6, backgroundColor: '#d0d0d0', marginBottom: 4 }}
+              style={[styles.skelBar, { backgroundColor: palette.bgSecondary }]}
             />
-            <View style={{ width: '60%', height: 6, backgroundColor: '#d0d0d0' }} />
+            <View
+              style={[styles.skelBarShort, { backgroundColor: palette.bgSecondary }]}
+            />
           </View>
         );
       }
 
-      const dayData = markedDates[dateString];
-      const events = dayData?.events ?? [];
+      const events = markedDates[dateString]?.events ?? [];
       const MAX_VISIBLE = 3;
       const overflowing = events.length > MAX_VISIBLE;
       const visibleEvents = overflowing ? events.slice(0, MAX_VISIBLE - 1) : events;
@@ -287,122 +251,168 @@ export function CalendarScreen() {
         <Pressable
           onPress={() => openDayDetail(dateString)}
           style={({ pressed }) => [
-            styles.dayCellContainer,
-            isToday && styles.todayDayCellContainer,
-            !isSelectedMonth && styles.disabledDayCellContainer,
+            styles.dayCell,
+            { borderColor: palette.border },
+            isToday && { backgroundColor: palette.bgSecondary },
             pressed && { opacity: 0.85 },
           ]}
         >
-          <View
-            style={[styles.dateNumberContainer, isToday && styles.todayDateNumberContainer]}
-          >
-            <Text
-              style={[
-                styles.dateText,
-                !isSelectedMonth && styles.disabledDateText,
-                isToday && styles.todayDateText,
-              ]}
+          <View style={[styles.dateBadge, isToday && { backgroundColor: palette.buttonFill }]}>
+            <ThemedText
+              type="sen-caption-bold"
+              lightColor={
+                isToday
+                  ? Colors.light.buttonLabel
+                  : isCurrentMonth
+                    ? Colors.light.text
+                    : Colors.light.textDisabled
+              }
+              darkColor={
+                isToday
+                  ? Colors.dark.buttonLabel
+                  : isCurrentMonth
+                    ? Colors.dark.text
+                    : Colors.dark.textDisabled
+              }
             >
               {date?.day}
-            </Text>
+            </ThemedText>
           </View>
 
-          <View style={styles.eventsContainer}>
+          <View style={styles.events}>
             {visibleEvents.map((event, index) => (
               <View
                 key={index}
                 style={[
-                  styles.eventPill,
+                  styles.pill,
                   { backgroundColor: event.color },
-                  event.done && styles.eventPillDone,
+                  event.done && styles.pillDone,
                 ]}
               >
                 <Text
-                  style={[styles.eventText, event.done && styles.eventTextDone]}
+                  style={[styles.pillText, event.done && styles.pillTextDone]}
                   numberOfLines={1}
+                  allowFontScaling={false}
                 >
                   {event.title}
                 </Text>
               </View>
             ))}
             {hiddenCount > 0 && (
-              <Text style={styles.moreText} numberOfLines={1}>
+              <ThemedText
+                type="sen-caption-2"
+                lightColor={Colors.light.textMuted}
+                darkColor={Colors.dark.textMuted}
+                numberOfLines={1}
+                style={styles.moreText}
+              >
                 +{hiddenCount} more
-              </Text>
+              </ThemedText>
             )}
           </View>
         </Pressable>
       );
     },
-    [markedDates, initialLoading, openDayDetail],
+    [markedDates, initialLoading, openDayDetail, palette],
   );
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <View style={styles.container}>
-        {/* Custom Header */}
-        <View style={styles.headerRow}>
-          <Text style={styles.yearText}>{year}</Text>
-          <View style={styles.headerButtons}>
-            <HeaderIconButton
-              icon="square.and.arrow.down"
-              label="Import calendar"
-              onPress={() => setIsImportVisible(true)}
-              palette={palette}
-            />
-            <HeaderIconButton
-              icon="plus"
-              label="Add event"
-              onPress={() => setIsAddEventVisible(true)}
-              palette={palette}
-            />
-            <HeaderIconButton
-              icon="chevron.left"
-              label="Previous"
-              onPress={() => changeDate(-1)}
-              palette={palette}
-            />
-            <HeaderIconButton
-              icon="chevron.right"
-              label="Next"
-              onPress={() => changeDate(1)}
-              palette={palette}
-            />
+    <ThemedView style={styles.root}>
+      <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
+        <View style={styles.container}>
+          {/* Header */}
+          <View style={styles.titleRow}>
+            <ThemedText type="sen-title-2">{year}</ThemedText>
+            <View style={styles.actions}>
+              <HeaderButton
+                icon="square.and.arrow.down"
+                label="Import calendar"
+                onPress={() => setIsImportVisible(true)}
+                palette={palette}
+              />
+              <HeaderButton
+                icon="plus"
+                label="Add task"
+                onPress={() => setIsAddVisible(true)}
+                palette={palette}
+              />
+            </View>
           </View>
-        </View>
 
-        <Text style={styles.monthText}>{month}</Text>
+          <View style={styles.monthRow}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Previous month"
+              onPress={() => changeDate(-1)}
+              hitSlop={12}
+              style={({ pressed }) => [styles.monthChevron, pressed && { opacity: 0.5 }]}
+            >
+              <IconSymbol name="chevron.left" size={20} color={palette.textMuted} />
+            </Pressable>
+            <ThemedText type="sen-title-3" style={styles.monthText}>
+              {month}
+            </ThemedText>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Next month"
+              onPress={() => changeDate(1)}
+              hitSlop={12}
+              style={({ pressed }) => [styles.monthChevron, pressed && { opacity: 0.5 }]}
+            >
+              <IconSymbol name="chevron.right" size={20} color={palette.textMuted} />
+            </Pressable>
+          </View>
 
-        <View>
-          <View style={styles.weekHeaderContainer}>
-            {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day) => (
-              <Text key={day} style={styles.weekHeaderText}>
+          {/* Calendar */}
+          <View style={styles.weekHeader}>
+            {WEEKDAYS.map((day) => (
+              <ThemedText
+                key={day}
+                type="sen-caption-bold"
+                lightColor={Colors.light.textMuted}
+                darkColor={Colors.dark.textMuted}
+                style={styles.weekHeaderText}
+              >
                 {day}
-              </Text>
+              </ThemedText>
             ))}
           </View>
-          <CalendarList
-            horizontal={true}
-            pagingEnabled={true}
-            calendarWidth={CALENDAR_WIDTH}
-            current={currentDate}
-            onVisibleMonthsChange={(months) => {
-              if (months && months[0] && months[0].dateString !== currentDate) {
-                setCurrentDate(months[0].dateString);
+          {/* Single-month Calendar (not CalendarList). The virtualized,
+              horizontally-paging CalendarList + a heavy custom dayComponent has
+              documented scroll-index render crashes on mount; Calendar renders
+              one month with no FlatList, and enableSwipeMonths uses a
+              lightweight PanResponder for month swiping. Chevron nav drives the
+              `initialDate` prop, which the library re-reads on change. */}
+          <Calendar
+            initialDate={currentDate}
+            enableSwipeMonths={true}
+            hideExtraDays={false}
+            showSixWeeks={true}
+            onMonthChange={(m) => {
+              if (m?.dateString && m.dateString !== currentDate) {
+                setCurrentDate(m.dateString);
               }
             }}
             dayComponent={renderDay}
             hideArrows={true}
             renderHeader={() => null}
-            style={styles.calendarContainer}
-            calendarStyle={{ paddingLeft: 0, paddingRight: 0 }}
-            {...({ showNonCurrentDates: true, hideExtraDays: false } as any)}
+            style={[styles.calendar, { width: CALENDAR_WIDTH, backgroundColor: palette.background }]}
             theme={
               {
                 calendarBackground: 'transparent',
-                textSectionTitleColor: '#8c8c8c',
-                textDayHeaderFontWeight: '600',
-                textDayHeaderFontSize: 13,
+                textSectionTitleColor: palette.textMuted,
+                // Strip the library's default 5px side padding and inter-week
+                // margin so the day columns span the full width and line up
+                // with our weekday header (each column == DAY_WIDTH).
+                'stylesheet.calendar.main': {
+                  container: { paddingLeft: 0, paddingRight: 0, backgroundColor: 'transparent' },
+                  monthView: { backgroundColor: 'transparent' },
+                  week: {
+                    marginVertical: 0,
+                    flexDirection: 'row',
+                    justifyContent: 'space-around',
+                  },
+                },
                 'stylesheet.calendar.header': {
                   header: { display: 'none' },
                   week: { display: 'none' },
@@ -410,7 +420,7 @@ export function CalendarScreen() {
                 'stylesheet.day.basic': {
                   base: {
                     width: DAY_WIDTH,
-                    height: 100,
+                    height: CELL_HEIGHT,
                     alignItems: 'center',
                     padding: 0,
                     margin: 0,
@@ -420,7 +430,7 @@ export function CalendarScreen() {
             }
           />
         </View>
-      </View>
+      </SafeAreaView>
 
       {/* Import Modal */}
       <Modal
@@ -433,46 +443,79 @@ export function CalendarScreen() {
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           style={styles.modalOverlay}
         >
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Import Calendar</Text>
-            <Text style={styles.modalSubtitle}>
+          <View style={[styles.modalContent, { backgroundColor: palette.background }]}>
+            <ThemedText type="sen-title-2" style={styles.modalTitle}>
+              Import Calendar
+            </ThemedText>
+            <ThemedText
+              type="sen-body"
+              lightColor={Colors.light.textSecondary}
+              darkColor={Colors.dark.textSecondary}
+              style={styles.modalSubtitle}
+            >
               Paste an .ics URL or use AI to parse a schedule.
-            </Text>
+            </ThemedText>
 
-            <Text style={styles.importSectionLabel}>From URL</Text>
-            <View style={styles.importContainer}>
+            <ThemedText
+              type="sen-caption-bold"
+              lightColor={Colors.light.textMuted}
+              darkColor={Colors.dark.textMuted}
+              style={styles.importSectionLabel}
+            >
+              FROM URL
+            </ThemedText>
+            <View style={[styles.importContainer, { backgroundColor: palette.bgSecondary }]}>
               <TextInput
-                style={styles.input}
+                style={[styles.input, { color: palette.text }]}
                 placeholder="Paste .ics link here..."
-                placeholderTextColor="#888"
+                placeholderTextColor={palette.textMuted}
                 value={url}
                 onChangeText={setUrl}
                 autoCapitalize="none"
                 keyboardType="url"
               />
               {loading ? (
-                <ActivityIndicator style={{ marginLeft: 10 }} size="small" color="#000" />
+                <ActivityIndicator style={{ marginLeft: 10 }} size="small" color={palette.text} />
               ) : (
-                <TouchableOpacity style={styles.importButton} onPress={handleImport}>
-                  <Text style={styles.importButtonText}>Import</Text>
+                <TouchableOpacity
+                  style={[styles.importButton, { backgroundColor: palette.buttonFill }]}
+                  onPress={handleImport}
+                >
+                  <ThemedText
+                    type="sen-caption-bold"
+                    lightColor={Colors.light.buttonLabel}
+                    darkColor={Colors.dark.buttonLabel}
+                  >
+                    Import
+                  </ThemedText>
                 </TouchableOpacity>
               )}
             </View>
 
-            <Text style={styles.importSectionLabel}>From Text (AI)</Text>
-            <View style={styles.magicImportContainer}>
+            <ThemedText
+              type="sen-caption-bold"
+              lightColor={Colors.light.textMuted}
+              darkColor={Colors.dark.textMuted}
+              style={styles.importSectionLabel}
+            >
+              FROM TEXT (AI)
+            </ThemedText>
+            <View style={[styles.magicImportContainer, { backgroundColor: palette.bgSecondary }]}>
               <TextInput
-                style={styles.magicInput}
+                style={[styles.magicInput, { color: palette.text }]}
                 placeholder="Paste raw schedule text..."
-                placeholderTextColor="#888"
+                placeholderTextColor={palette.textMuted}
                 value={magicText}
                 onChangeText={setMagicText}
                 multiline={true}
               />
               {magicLoading ? (
-                <ActivityIndicator style={{ marginLeft: 10 }} size="small" color="#000" />
+                <ActivityIndicator style={{ marginLeft: 10 }} size="small" color={palette.text} />
               ) : (
-                <TouchableOpacity style={styles.magicImportButton} onPress={handleMagicImport}>
+                <TouchableOpacity
+                  style={[styles.magicImportButton, { backgroundColor: palette.accent }]}
+                  onPress={handleMagicImport}
+                >
                   <Text style={styles.magicImportButtonText}>AI Import</Text>
                 </TouchableOpacity>
               )}
@@ -483,422 +526,197 @@ export function CalendarScreen() {
                 style={styles.modalCancelButton}
                 onPress={() => setIsImportVisible(false)}
               >
-                <Text style={styles.modalCancelButtonText}>Close</Text>
+                <ThemedText
+                  type="sen-headline"
+                  lightColor={Colors.light.textSecondary}
+                  darkColor={Colors.dark.textSecondary}
+                >
+                  Close
+                </ThemedText>
               </TouchableOpacity>
             </View>
           </View>
         </KeyboardAvoidingView>
       </Modal>
 
-      {/* Add Event Modal */}
-      <Modal
-        visible={isAddEventVisible}
-        animationType="fade"
-        transparent={true}
-        onRequestClose={() => setIsAddEventVisible(false)}
-      >
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-          style={styles.modalOverlay}
-        >
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Add Event</Text>
-            <Text style={styles.modalSubtitle}>
-              {(() => {
-                const [y, m, d] = currentDate.split('-').map(Number);
-                return new Date(y, m - 1, d).toLocaleDateString('en-US', {
-                  weekday: 'long',
-                  month: 'long',
-                  day: 'numeric',
-                });
-              })()}
-            </Text>
-
-            <TextInput
-              style={styles.modalInput}
-              placeholder="Event Title"
-              placeholderTextColor="#888"
-              value={newEventTitle}
-              onChangeText={setNewEventTitle}
-              autoFocus={true}
-            />
-
-            <View style={styles.formRow}>
-              <Text style={styles.formLabel}>Start</Text>
-              {Platform.OS === 'ios' ? (
-                <DateTimePicker
-                  value={startTime}
-                  mode="time"
-                  display="compact"
-                  onChange={(_event, selectedDate) => {
-                    if (selectedDate) setStartTime(selectedDate);
-                  }}
-                />
-              ) : (
-                <>
-                  <TouchableOpacity
-                    style={styles.timeButton}
-                    onPress={() => setShowPicker('start')}
-                  >
-                    <Text style={styles.timeButtonText}>
-                      {startTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                    </Text>
-                  </TouchableOpacity>
-                  {showPicker === 'start' && (
-                    <DateTimePicker
-                      value={startTime}
-                      mode="time"
-                      onChange={(_event, selectedDate) => {
-                        setShowPicker(null);
-                        if (selectedDate) setStartTime(selectedDate);
-                      }}
-                    />
-                  )}
-                </>
-              )}
-            </View>
-
-            <View style={styles.formRow}>
-              <Text style={styles.formLabel}>End</Text>
-              {Platform.OS === 'ios' ? (
-                <DateTimePicker
-                  value={endTime}
-                  mode="time"
-                  display="compact"
-                  onChange={(_event, selectedDate) => {
-                    if (selectedDate) setEndTime(selectedDate);
-                  }}
-                />
-              ) : (
-                <>
-                  <TouchableOpacity
-                    style={styles.timeButton}
-                    onPress={() => setShowPicker('end')}
-                  >
-                    <Text style={styles.timeButtonText}>
-                      {endTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                    </Text>
-                  </TouchableOpacity>
-                  {showPicker === 'end' && (
-                    <DateTimePicker
-                      value={endTime}
-                      mode="time"
-                      onChange={(_event, selectedDate) => {
-                        setShowPicker(null);
-                        if (selectedDate) setEndTime(selectedDate);
-                      }}
-                    />
-                  )}
-                </>
-              )}
-            </View>
-
-            <View style={styles.repeatContainer}>
-              <Text style={styles.formLabel}>Repeat</Text>
-              <View style={styles.pillsRow}>
-                {(['none', 'daily', 'weekly', 'monthly'] as const).map((freq) => (
-                  <TouchableOpacity
-                    key={freq}
-                    style={[styles.pill, repeatFrequency === freq && styles.pillActive]}
-                    onPress={() => setRepeatFrequency(freq)}
-                  >
-                    <Text
-                      style={[
-                        styles.pillText,
-                        repeatFrequency === freq && styles.pillTextActive,
-                      ]}
-                    >
-                      {freq.charAt(0).toUpperCase() + freq.slice(1)}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-
-              {repeatFrequency !== 'none' && (
-                <View style={[styles.formRow, styles.untilRow]}>
-                  <Text style={styles.formLabel}>Until</Text>
-                  {Platform.OS === 'ios' ? (
-                    <DateTimePicker
-                      value={endRepeatDate}
-                      mode="date"
-                      display="compact"
-                      onChange={(_event, selectedDate) => {
-                        if (selectedDate) setEndRepeatDate(selectedDate);
-                      }}
-                    />
-                  ) : (
-                    <>
-                      <TouchableOpacity
-                        style={styles.timeButton}
-                        onPress={() => setShowPicker('repeatEnd')}
-                      >
-                        <Text style={styles.timeButtonText}>
-                          {endRepeatDate.toLocaleDateString([], {
-                            month: 'short',
-                            day: 'numeric',
-                            year: 'numeric',
-                          })}
-                        </Text>
-                      </TouchableOpacity>
-                      {showPicker === 'repeatEnd' && (
-                        <DateTimePicker
-                          value={endRepeatDate}
-                          mode="date"
-                          onChange={(_event, selectedDate) => {
-                            setShowPicker(null);
-                            if (selectedDate) setEndRepeatDate(selectedDate);
-                          }}
-                        />
-                      )}
-                    </>
-                  )}
-                </View>
-              )}
-            </View>
-
-            <View style={styles.modalButtons}>
-              <TouchableOpacity
-                style={styles.modalCancelButton}
-                onPress={() => {
-                  setIsAddEventVisible(false);
-                  setNewEventTitle('');
-                }}
-              >
-                <Text style={styles.modalCancelButtonText}>Cancel</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={styles.modalAddButton} onPress={handleAddEvent}>
-                <Text style={styles.modalAddButtonText}>Add</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
+      {/* Default add modal (same as the todo screen) */}
+      <TaskFormModal
+        visible={isAddVisible}
+        onClose={() => setIsAddVisible(false)}
+        onSave={saveTask}
+      />
 
       <DayDetailSheet
         visible={dayDetailDate !== null}
         dateKey={dayDetailDate}
         onClose={() => setDayDetailDate(null)}
       />
-    </SafeAreaView>
+    </ThemedView>
   );
 }
 
-function HeaderIconButton({
+function HeaderButton({
   icon,
   label,
   onPress,
   palette,
 }: {
-  icon: 'square.and.arrow.down' | 'plus' | 'chevron.left' | 'chevron.right';
+  icon: 'square.and.arrow.down' | 'plus';
   label: string;
   onPress: () => void;
   palette: typeof Colors.light;
 }) {
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      onPress={onPress}
-      hitSlop={6}
-      style={({ pressed }) => [
-        styles.headerIconButton,
-        { backgroundColor: palette.surface },
-        pressed && { opacity: 0.7 },
-      ]}
-    >
-      <IconSymbol name={icon} size={18} color={palette.surfaceText} />
-    </Pressable>
+    <View style={styles.glassWrap}>
+      <GlassSurface tint="regular" interactive scheme="auto" style={styles.glassInner}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={label}
+          onPress={onPress}
+          hitSlop={6}
+          style={({ pressed }) => [
+            styles.glassPress,
+            { transform: [{ scale: pressed ? 0.94 : 1 }] },
+          ]}
+        >
+          <IconSymbol name={icon} size={18} color={palette.surfaceText} />
+        </Pressable>
+      </GlassSurface>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  root: {
+    flex: 1,
+  },
   safeArea: {
     flex: 1,
-    backgroundColor: BG_COLOR,
   },
   container: {
     flex: 1,
-    paddingHorizontal: 16,
+    paddingHorizontal: H_PADDING,
   },
-  headerRow: {
+  titleRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginTop: 20,
-    marginBottom: 20,
+    marginTop: 8,
+    marginBottom: 16,
   },
-  yearText: {
-    fontSize: 32,
-    fontWeight: '800',
-    color: TEXT_COLOR,
-    letterSpacing: -1,
-  },
-  headerButtons: {
+  actions: {
     flexDirection: 'row',
-    gap: 10,
+    gap: 8,
   },
-  headerIconButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
+  glassWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.15,
     shadowRadius: 10,
     elevation: 4,
   },
-  monthText: {
-    fontSize: 22,
-    fontWeight: '700',
-    color: TEXT_COLOR,
-    alignSelf: 'center',
-    marginBottom: 20,
+  glassInner: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    overflow: 'hidden',
   },
-  weekHeaderContainer: {
+  glassPress: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  monthRow: {
     flexDirection: 'row',
-    marginBottom: 10,
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  monthChevron: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  monthText: {
+    flex: 1,
+    textAlign: 'center',
+  },
+  weekHeader: {
+    flexDirection: 'row',
+    marginBottom: 8,
   },
   weekHeaderText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#666',
     width: DAY_WIDTH,
     textAlign: 'center',
   },
-  calendarContainer: {
-    backgroundColor: '#f0f0f0',
-    minHeight: 500,
+  calendar: {
+    minHeight: CELL_HEIGHT * 6,
   },
-  dayCellContainer: {
+  dayCell: {
     width: '100%',
-    height: 90,
+    height: CELL_HEIGHT,
     alignItems: 'center',
-    paddingTop: 5,
-    borderWidth: 1,
-    borderColor: '#d0d0d0',
-    backgroundColor: '#fff',
+    paddingTop: 6,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderRightWidth: StyleSheet.hairlineWidth,
     overflow: 'hidden',
   },
-  todayDayCellContainer: {
-    backgroundColor: '#fff3e0',
-  },
-  disabledDayCellContainer: {
-    backgroundColor: '#fafafa',
-  },
-  dateNumberContainer: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
+  dateBadge: {
+    minWidth: 22,
+    height: 22,
+    paddingHorizontal: 6,
+    borderRadius: 11,
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 4,
+    marginBottom: 3,
   },
-  todayDateNumberContainer: {
-    backgroundColor: '#ff3b30',
-  },
-  dateText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: TEXT_COLOR,
-  },
-  todayDateText: {
-    color: '#fff',
-  },
-  disabledDateText: {
-    color: '#999999',
-  },
-  eventsContainer: {
+  events: {
     width: '100%',
-    paddingHorizontal: 2,
+    paddingHorizontal: 3,
     gap: 2,
   },
-  eventPill: {
-    paddingHorizontal: 4,
-    paddingVertical: 2,
-    borderRadius: 4,
+  pill: {
+    paddingVertical: 1,
+    paddingHorizontal: 5,
+    borderRadius: 5,
     width: '100%',
   },
-  eventPillDone: {
+  pillDone: {
     opacity: 0.55,
   },
-  eventText: {
-    fontSize: 9,
-    fontWeight: '500',
-    color: '#000',
+  pillText: {
+    fontFamily: Fonts.displayMedium,
+    fontSize: 10,
+    lineHeight: 14,
+    color: '#1f1f1f',
   },
-  eventTextDone: {
+  pillTextDone: {
     textDecorationLine: 'line-through',
     color: '#555',
   },
   moreText: {
-    fontSize: 9,
-    fontWeight: '600',
-    color: '#666',
     paddingHorizontal: 4,
+    fontSize: 10,
+    lineHeight: 14,
   },
-  importContainer: {
-    flexDirection: 'row',
-    marginBottom: 16,
-    alignItems: 'center',
-    backgroundColor: '#f5f5f5',
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+  skelDate: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    marginBottom: 6,
   },
-  magicImportContainer: {
-    flexDirection: 'row',
-    marginBottom: 24,
-    alignItems: 'center',
-    backgroundColor: '#f5f5f5',
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+  skelBar: {
+    width: '80%',
+    height: 6,
+    borderRadius: 3,
+    marginBottom: 4,
   },
-  importSectionLabel: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#666',
-    textTransform: 'uppercase',
-    letterSpacing: 0.6,
-    marginBottom: 8,
-  },
-  magicInput: {
-    flex: 1,
-    fontSize: 14,
-    color: '#000',
-    maxHeight: 60,
-  },
-  magicImportButton: {
-    backgroundColor: '#7b2cbf',
-    paddingHorizontal: 15,
-    paddingVertical: 8,
-    borderRadius: 15,
-    marginLeft: 10,
-  },
-  magicImportButtonText: {
-    color: '#fff',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  input: {
-    flex: 1,
-    fontSize: 14,
-    color: '#000',
-  },
-  importButton: {
-    backgroundColor: '#000',
-    paddingHorizontal: 15,
-    paddingVertical: 8,
-    borderRadius: 15,
-    marginLeft: 10,
-  },
-  importButtonText: {
-    color: '#fff',
-    fontSize: 12,
-    fontWeight: '600',
+  skelBarShort: {
+    width: '60%',
+    height: 6,
+    borderRadius: 3,
   },
   modalOverlay: {
     flex: 1,
@@ -907,7 +725,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   modalContent: {
-    backgroundColor: '#fff',
     borderRadius: 20,
     padding: 24,
     width: '85%',
@@ -918,23 +735,56 @@ const styles = StyleSheet.create({
     elevation: 8,
   },
   modalTitle: {
-    fontSize: 22,
-    fontWeight: 'bold',
-    color: '#000',
     marginBottom: 4,
   },
   modalSubtitle: {
-    fontSize: 14,
-    color: '#666',
     marginBottom: 20,
   },
-  modalInput: {
-    backgroundColor: '#f5f5f5',
+  importSectionLabel: {
+    letterSpacing: 0.6,
+    marginBottom: 8,
+  },
+  importContainer: {
+    flexDirection: 'row',
+    marginBottom: 16,
+    alignItems: 'center',
     borderRadius: 12,
-    padding: 16,
-    fontSize: 16,
-    color: '#000',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  magicImportContainer: {
+    flexDirection: 'row',
     marginBottom: 24,
+    alignItems: 'center',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  input: {
+    flex: 1,
+    fontSize: 14,
+  },
+  magicInput: {
+    flex: 1,
+    fontSize: 14,
+    maxHeight: 60,
+  },
+  importButton: {
+    paddingHorizontal: 15,
+    paddingVertical: 8,
+    borderRadius: 15,
+    marginLeft: 10,
+  },
+  magicImportButton: {
+    paddingHorizontal: 15,
+    paddingVertical: 8,
+    borderRadius: 15,
+    marginLeft: 10,
+  },
+  magicImportButtonText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
   },
   modalButtons: {
     flexDirection: 'row',
@@ -945,72 +795,5 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 16,
     borderRadius: 10,
-  },
-  modalCancelButtonText: {
-    color: '#666',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  modalAddButton: {
-    backgroundColor: '#000',
-    paddingVertical: 10,
-    paddingHorizontal: 20,
-    borderRadius: 10,
-  },
-  modalAddButtonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  formRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  formLabel: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#333',
-  },
-  timeButton: {
-    backgroundColor: '#f5f5f5',
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-  },
-  timeButtonText: {
-    fontSize: 16,
-    color: '#000',
-    fontWeight: '500',
-  },
-  repeatContainer: {
-    marginBottom: 16,
-  },
-  pillsRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 8,
-  },
-  untilRow: {
-    marginTop: 12,
-    marginBottom: 0,
-  },
-  pill: {
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 16,
-    backgroundColor: '#f5f5f5',
-  },
-  pillActive: {
-    backgroundColor: '#000',
-  },
-  pillText: {
-    fontSize: 13,
-    color: '#666',
-    fontWeight: '500',
-  },
-  pillTextActive: {
-    color: '#fff',
   },
 });

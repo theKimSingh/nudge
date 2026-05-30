@@ -3,6 +3,64 @@ const { TOOLS } = require('./tools');
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
+// Gemini occasionally returns transient 503 (UNAVAILABLE / "high demand") or 429
+// (rate limit). Those are momentary and almost always clear on a quick retry —
+// letting one bubble up kills the whole voice session, forcing the user to
+// re-tap and re-speak. Retry transient failures with exponential backoff + jitter
+// before giving up. Non-transient errors (bad request, auth) rethrow immediately.
+const TRANSIENT_STATUSES = new Set([429, 500, 502, 503, 504]);
+const MAX_GEMINI_ATTEMPTS = 4;
+
+function isTransientError(err) {
+  const status = Number(err?.status ?? err?.code);
+  if (TRANSIENT_STATUSES.has(status)) return true;
+  return /UNAVAILABLE|RESOURCE_EXHAUSTED|overloaded|high demand|please try again/i.test(
+    String(err?.message || ''),
+  );
+}
+
+function abortError() {
+  const e = new Error('Aborted');
+  e.name = 'AbortError';
+  return e;
+}
+
+function delay(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(abortError());
+    const t = setTimeout(resolve, ms);
+    signal?.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(t);
+        reject(abortError());
+      },
+      { once: true },
+    );
+  });
+}
+
+async function generateContentWithRetry(params, signal) {
+  let lastErr;
+  for (let attempt = 1; attempt <= MAX_GEMINI_ATTEMPTS; attempt++) {
+    if (signal?.aborted) throw abortError();
+    try {
+      return await ai.models.generateContent(params);
+    } catch (err) {
+      lastErr = err;
+      if (signal?.aborted || err?.name === 'AbortError') throw err;
+      if (attempt === MAX_GEMINI_ATTEMPTS || !isTransientError(err)) throw err;
+      const backoff =
+        Math.min(4000, 400 * 2 ** (attempt - 1)) + Math.floor(Math.random() * 250);
+      console.warn(
+        `[gemini] transient error (status=${err?.status ?? err?.code}); retry ${attempt}/${MAX_GEMINI_ATTEMPTS - 1} in ${backoff}ms`,
+      );
+      await delay(backoff, signal);
+    }
+  }
+  throw lastErr;
+}
+
 const RESPONSE_SCHEMA = {
   type: 'object',
   required: ['summary', 'operations', 'new_constraints', 'reinforced_constraint_ids'],
@@ -59,7 +117,7 @@ async function plan({ audioBase64, mimeType, userText, systemPrompt }) {
     parts.push({ text: userText });
   }
 
-  const result = await ai.models.generateContent({
+  const result = await generateContentWithRetry({
     model: 'gemini-2.5-flash',
     contents: [{ role: 'user', parts }],
     config: {
@@ -90,17 +148,20 @@ async function runAgentTurn({ history, systemPrompt, signal }) {
   // empty even when the final response contained valid function calls,
   // producing "0 calls" rounds that broke the agent loop. Abort still works
   // via `config.abortSignal`.
-  const result = await ai.models.generateContent({
-    model: 'gemini-2.5-flash',
-    contents: history,
-    config: {
-      systemInstruction: systemPrompt,
-      tools: [{ functionDeclarations: TOOLS }],
-      toolConfig: { functionCallingConfig: { mode: 'AUTO' } },
-      temperature: 0.2,
-      abortSignal: signal,
+  const result = await generateContentWithRetry(
+    {
+      model: 'gemini-2.5-flash',
+      contents: history,
+      config: {
+        systemInstruction: systemPrompt,
+        tools: [{ functionDeclarations: TOOLS }],
+        toolConfig: { functionCallingConfig: { mode: 'AUTO' } },
+        temperature: 0.2,
+        abortSignal: signal,
+      },
     },
-  });
+    signal,
+  );
 
   // SDK exposes `functionCalls` as a getter on the response (filters parts
   // that carry a functionCall). Falls back to walking candidate parts so we

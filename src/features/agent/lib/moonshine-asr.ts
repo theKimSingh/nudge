@@ -1,6 +1,6 @@
 // On-device streaming ASR via react-native-sherpa-onnx + Moonshine Base EN
-// (int8). Drop-in alternative to whisper-asr.ts behind the ASR_ENGINE flag in
-// asr-engine.ts — it returns the same AsrStream shape the session hook consumes.
+// (int8) — the app's sole ASR engine. Returns the AsrStream shape (asr-engine.ts)
+// the session hook consumes.
 //
 // Why a façade: sherpa-onnx's Moonshine is an *offline* recognizer
 // (transcribeSamples(waveform) -> text). There is no native streaming/partial
@@ -8,15 +8,15 @@
 // stream()/streamInsert()/streamStop() contract by buffering inserted PCM and
 // re-running the offline recognizer on the growing buffer on a fixed cadence —
 // exactly the "cheap re-run on a growing window" pattern Moonshine is built for
-// (it scales compute with clip length instead of zero-padding to 30s like
-// Whisper, so repeated short re-runs are inexpensive).
+// (it scales compute with clip length instead of zero-padding to 30s, so
+// repeated short re-runs are inexpensive).
 //
-// Why bundled-then-extract: sherpa-onnx loads models from a filesystem path,
-// NOT via Metro require() like Whisper's .pte. So we bundle the ~239MB .tar.bz2
-// as a Metro asset (require below), resolve it to a local path with expo-asset,
-// and extract once to DocumentDirectoryPath on first launch via sherpa's native
-// extractTarBz2 — no network at runtime. Mirrors the Whisper .pte bundle pattern
-// (fetch the archive with `npm run fetch-moonshine-model` after a fresh clone).
+// Why bundled-then-extract: sherpa-onnx loads models from a filesystem path, not
+// a Metro-required asset. So we bundle the ~239MB .tar.bz2 as a Metro asset
+// (require below), resolve it to a local path with expo-asset, and extract once
+// to DocumentDirectoryPath on first launch via sherpa's native extractTarBz2 —
+// no network at runtime. Fetch the archive with `npm run fetch-moonshine-model`
+// after a fresh clone.
 
 import { useEffect, useRef, useState } from 'react';
 import * as RNFS from '@dr.pogodin/react-native-fs';
@@ -46,6 +46,11 @@ const MIN_SAMPLES = 3_200; // changed from 1600
 // WER>100% because <0.5% of its training data is sub-1s). Zero-pad short
 // buffers up to 1s before transcribing to dodge that failure mode.
 const MIN_TRANSCRIBE_SAMPLES = SAMPLE_RATE;
+// Audio kept when a new utterance begins (see beginUtterance). The VAD fires
+// speech_start ~minSpeechMs (400ms) AFTER the user actually started talking, so
+// the opening words are already in the buffer; 800ms of pre-roll preserves them
+// while discarding accumulated inter-utterance silence and stale audio.
+const PREROLL_SAMPLES = Math.round(SAMPLE_RATE * 0.8);
 
 type StreamYield = {
   committed: { text: string };
@@ -117,6 +122,14 @@ function waitTick(
   });
 }
 
+// Normalize a word for local-agreement comparison: lowercase + strip trailing
+// punctuation, so "Okay"/"okay" and "early."/"early" count as agreeing. Without
+// this, capitalization/punctuation drift between Moonshine re-decodes stalls the
+// committed prefix even though the words match.
+function normWord(w: string): string {
+  return w.toLowerCase().replace(/[.,!?;:]+$/g, '');
+}
+
 export function useMoonshineStream(): AsrStream {
   const [isReady, setIsReady] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -135,6 +148,9 @@ export function useMoonshineStream(): AsrStream {
   // so a stop/start cycle can't leave a stale generator bleeding text into the
   // next utterance.
   const streamGenRef = useRef(0);
+  // Serializes decodes — sherpa's offline recognizer isn't safe to run
+  // concurrently, and the cadence loop and finalize() would otherwise overlap.
+  const transcribeChainRef = useRef<Promise<string>>(Promise.resolve(''));
 
   useEffect(() => {
     let cancelled = false;
@@ -159,37 +175,75 @@ export function useMoonshineStream(): AsrStream {
     };
   }, []);
 
-  async function transcribeBuffer(
+  function transcribeBuffer(
     engine: SttEngine,
     samples: number[],
   ): Promise<string> {
-    let input = samples;
-    if (input.length < MIN_TRANSCRIBE_SAMPLES) {
-      input = samples.slice();
-      while (input.length < MIN_TRANSCRIBE_SAMPLES) input.push(0);
-    }
-    setIsGenerating(true);
-    try {
-      const result = await engine.transcribeSamples(input, SAMPLE_RATE);
-      return (result.text ?? '').trim();
-    } finally {
-      setIsGenerating(false);
-    }
+    const run = transcribeChainRef.current.catch(() => '').then(async () => {
+      let input = samples;
+      if (input.length < MIN_TRANSCRIBE_SAMPLES) {
+        input = samples.slice();
+        while (input.length < MIN_TRANSCRIBE_SAMPLES) input.push(0);
+      }
+      setIsGenerating(true);
+      try {
+        const result = await engine.transcribeSamples(input, SAMPLE_RATE);
+        return (result.text ?? '').trim();
+      } finally {
+        setIsGenerating(false);
+      }
+    });
+    transcribeChainRef.current = run.catch(() => '');
+    return run;
   }
 
   async function* stream(): AsyncGenerator<StreamYield, void, unknown> {
     // Supersede any prior generator and wake it out of a cadence sleep so it
-    // exits at once; then start a fresh utterance.
+    // exits at once. NOTE: we do NOT reset bufferRef here — finalize() owns the
+    // utterance buffer and swaps it synchronously at speech-end. Resetting here
+    // would race the next utterance's audio (a delayed restart wipes samples
+    // that already arrived) and is what dropped short utterances before.
     const myGen = (streamGenRef.current += 1);
     wakeRef.current?.();
-    bufferRef.current = [];
     stopRef.current = false;
     const engine = engineRef.current;
     if (!engine) return;
 
     const current = () => streamGenRef.current === myGen;
     let lastLen = 0;
-    let lastText = '';
+    // Local-agreement stabilization. Moonshine re-decodes the whole growing
+    // buffer each tick, and an independent decode can shrink or rewrite its tail
+    // (it guesses sentence endings on incomplete audio). We only promote words
+    // that two consecutive decodes AGREE on into `committed`, which therefore
+    // only ever grows — so the displayed transcript stays continuous and never
+    // shows a guess that later vanishes. The unconfirmed tail rides in
+    // `nonCommitted`.
+    let prevWords: string[] = [];
+    let committed = '';
+    let committedCount = 0;
+
+    const emit = (full: string): StreamYield => {
+      const words = full.split(/\s+/).filter(Boolean);
+      // Count leading words this decode and the previous one agree on
+      // (normalized), so capitalization/punctuation drift doesn't stall us.
+      let agreed = 0;
+      const n = Math.min(words.length, prevWords.length);
+      while (agreed < n && normWord(words[agreed]) === normWord(prevWords[agreed])) {
+        agreed++;
+      }
+      prevWords = words;
+      // committed only ever grows; adopt the latest decode's word forms.
+      if (agreed > committedCount) {
+        committedCount = agreed;
+        committed = words.slice(0, committedCount).join(' ');
+      }
+      // tail = the current decode's words past the committed count, by index.
+      // (string slice was case-sensitive and emptied the tail on drift, which
+      // is what froze the display mid-utterance.)
+      const tail =
+        words.length > committedCount ? words.slice(committedCount).join(' ') : '';
+      return { committed: { text: committed }, nonCommitted: { text: tail } };
+    };
 
     while (!stopRef.current && current()) {
       await waitTick(RERUN_CADENCE_MS, (wake) => {
@@ -202,24 +256,11 @@ export function useMoonshineStream(): AsrStream {
       lastLen = len;
       const text = await transcribeBuffer(engine, bufferRef.current);
       if (!current()) return; // superseded mid-transcribe
-      if (text && text !== lastText) {
-        lastText = text;
-        yield { committed: { text }, nonCommitted: { text: '' } };
-      }
+      if (text) yield emit(text);
     }
-
-    // Final pass over the complete utterance, if it grew since the last re-run
-    // and we weren't superseded.
-    if (
-      current() &&
-      bufferRef.current.length >= MIN_SAMPLES &&
-      bufferRef.current.length !== lastLen
-    ) {
-      const finalText = await transcribeBuffer(engine, bufferRef.current);
-      if (current() && finalText && finalText !== lastText) {
-        yield { committed: { text: finalText }, nonCommitted: { text: '' } };
-      }
-    }
+    // No final pass — finalize() does the authoritative end-of-utterance decode
+    // that gets sent to the agent (reliable even when `committed` never
+    // advanced). This generator is purely for the live display.
   }
 
   function streamInsert(samples: Float32Array): void {
@@ -227,10 +268,41 @@ export function useMoonshineStream(): AsrStream {
     for (let i = 0; i < samples.length; i++) buf.push(samples[i]);
   }
 
+  // Called at VAD speech_start. Drops accumulated inter-utterance silence and
+  // any stale audio left by a stop() that didn't finalize, keeping only a short
+  // pre-roll so this utterance's opening words survive. Without this the buffer
+  // (and every decode) grows with the gaps between utterances over a session.
+  function beginUtterance(): void {
+    const buf = bufferRef.current;
+    if (buf.length > PREROLL_SAMPLES) {
+      bufferRef.current = buf.slice(buf.length - PREROLL_SAMPLES);
+    }
+  }
+
   function streamStop(): void {
     stopRef.current = true;
     // Interrupt the cadence sleep so the generator finalizes immediately.
     wakeRef.current?.();
+  }
+
+  // Authoritative end-of-utterance decode. Captures the COMPLETE buffer (the
+  // array ref is captured here, so a later stream() reset can't pull it out from
+  // under us) and decodes it once, serialized behind any in-flight cadence
+  // decode. This is what gets sent to the agent — independent of the streamed
+  // `committed` text, which can stay empty when the leading words are unstable.
+  async function finalize(): Promise<string> {
+    stopRef.current = true;
+    wakeRef.current?.();
+    const engine = engineRef.current;
+    // Capture this utterance's audio and immediately swap in a fresh buffer so
+    // the NEXT utterance accumulates cleanly. Capturing the array ref means a
+    // later reset can't pull samples out from under this decode, and the buffer
+    // never grows past one utterance (which was what degraded decode speed and
+    // accuracy the longer a session ran).
+    const buf = bufferRef.current;
+    bufferRef.current = [];
+    if (!engine || buf.length < MIN_SAMPLES) return '';
+    return transcribeBuffer(engine, buf);
   }
 
   return {
@@ -241,5 +313,7 @@ export function useMoonshineStream(): AsrStream {
     stream,
     streamInsert,
     streamStop,
+    finalize,
+    beginUtterance,
   };
 }

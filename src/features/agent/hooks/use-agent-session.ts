@@ -25,7 +25,7 @@ import { connectAgentWs, type ServerEvent } from '../lib/agent-ws';
 import { useActiveAsrStream } from '../lib/asr-engine';
 import { createPcmStream } from '../lib/pcm-stream';
 import { createVad } from '../lib/vad';
-import { cleanTranscript } from '../lib/whisper-asr';
+import { cleanTranscript } from '../lib/clean-transcript';
 
 export type AgentSessionPhase =
   | 'idle'
@@ -72,6 +72,8 @@ export type UseAgentSessionResult = {
   phase: AgentSessionPhase;
   errorMessage: string | null;
   transcript: string;
+  /** Unconfirmed trailing words being decoded — shown faint after `transcript`. */
+  transcriptTail: string;
   amplitude: SharedValue<number>;
   lastUndoChip: AgentUndoChip | null;
   idlePromptVisible: boolean;
@@ -81,9 +83,11 @@ export type UseAgentSessionResult = {
   downloadProgress: number;
   /** True once the on-device ASR model is warm and ready to record. */
   asrReady: boolean;
-  start(date: string): Promise<void>;
+  start(date?: string): Promise<void>;
   stop(reason?: string): Promise<void>;
   clientUndo(n?: number): void;
+  /** Set the day (YYYY-MM-DD) the agent should schedule on (the todo tab's viewed day). */
+  setViewedDate(date: string): void;
 };
 
 const IDLE_SOFT_MS = 30_000;
@@ -114,6 +118,11 @@ function joinUrl(base: string, path: string): string {
   return b + p;
 }
 
+function todayKey(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 async function requestMicPermission(): Promise<{ granted: boolean; canAskAgain: boolean }> {
   if (Platform.OS === 'android') {
     const status = await PermissionsAndroid.request(
@@ -133,11 +142,10 @@ async function requestMicPermission(): Promise<{ granted: boolean; canAskAgain: 
 export function useAgentSession(): UseAgentSessionResult {
   const { applyServerInsert, applyServerUpdate, applyServerDelete } = useTasks();
 
-  // On-device ASR hook (engine chosen by ASR_ENGINE in asr-engine.ts). Mounts
-  // once for the lifetime of the session provider and exposes a generator API
-  // for streaming partials. Moonshine downloads its model on first cold start
-  // (~239MB, cached after); Whisper Base is bundled. Either way isReady flips
-  // true once the model is warm and downloadProgress tracks acquisition.
+  // On-device ASR hook (Moonshine, via asr-engine.ts). Mounts once for the
+  // lifetime of the session provider and exposes a generator API for streaming
+  // partials. The model is bundled and extracted on first cold start; isReady
+  // flips true once it's warm and downloadProgress tracks acquisition.
   //
   // IMPORTANT: the hook returns a FRESH object every render (no memoization).
   // Reading `asr` directly inside useCallback / useEffect dependency arrays
@@ -152,6 +160,7 @@ export function useAgentSession(): UseAgentSessionResult {
   const [phase, setPhase] = useState<AgentSessionPhase>('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<string>('');
+  const [transcriptTail, setTranscriptTail] = useState<string>('');
   const [lastUndoChip, setLastUndoChip] = useState<AgentUndoChip | null>(null);
   const [idlePromptVisible, setIdlePromptVisible] = useState(false);
   const [taskToasts, setTaskToasts] = useState<TaskToast[]>([]);
@@ -162,6 +171,10 @@ export function useAgentSession(): UseAgentSessionResult {
   const wsRef = useRef<AgentWsHandle | null>(null);
   const pcmStreamRef = useRef<PcmStreamHandle | null>(null);
   const vadRef = useRef<VadHandle | null>(null);
+  // The todo-tab day the user is viewing — the agent schedules on this date.
+  // A ref (not state) so updating it on day-swipes doesn't re-render the whole
+  // app subtree under the session provider; start() reads the latest at tap.
+  const viewedDateRef = useRef<string>(todayKey());
   const phaseRef = useRef<AgentSessionPhase>('idle');
   const stoppingRef = useRef(false);
   const taskChangesRef = useRef(0);
@@ -236,6 +249,7 @@ export function useAgentSession(): UseAgentSessionResult {
     wsRef.current = null;
     vadRef.current = null;
     liveTranscriptHighWaterRef.current = '';
+    setTranscriptTail('');
 
     if (pcm) {
       try {
@@ -416,10 +430,16 @@ export function useAgentSession(): UseAgentSessionResult {
             patch.updated_at = payload.updated_at;
           }
           applyServerUpdate(taskId, patch);
+          // Use the BARE task title (the backend includes it in the payload),
+          // never journal.label — the label is already a full phrase like
+          // "Updated Leet Code", and feedback-band's lineFor() prepends "Updated"
+          // again, producing "Updated Updated Leet Code".
           const updatedTitle =
             typeof fields.title === 'string' && fields.title
               ? fields.title
-              : journal?.label ?? 'task';
+              : typeof payload.title === 'string' && payload.title
+                ? payload.title
+                : 'task';
           pushTaskToast({
             id: ev.call_id,
             kind: 'updated',
@@ -498,6 +518,11 @@ export function useAgentSession(): UseAgentSessionResult {
       }
       if (ev.type === 'agent_done') {
         if (phaseRef.current === 'thinking') setPhase('listening');
+        // If the turn changed nothing, the user's stale transcript is still on
+        // screen — clear it so "I'm listening…" returns instead of looking
+        // frozen. (Mutations already clear it via tool_result; a summary chip,
+        // if any, follows this event.)
+        if (mutationsThisSegmentRef.current === 0) setTranscript('');
         resetIdleWatchdog();
         thinkingStartedAtRef.current = 0;
         return;
@@ -529,6 +554,25 @@ export function useAgentSession(): UseAgentSessionResult {
       }
       if (ev.type === 'error') {
         if (__DEV__) console.warn('[agent] server error:', ev.code, ev.message);
+        // AGENT_FAILED is a transient model failure that survived the backend's
+        // retries; the WS session stays usable, so keep the mic alive and let
+        // the user retry by speaking instead of tearing everything down. Other
+        // codes (auth, prompt build) are fatal — stop.
+        if (ev.code === 'AGENT_FAILED') {
+          if (phaseRef.current === 'thinking' || phaseRef.current === 'syncing') {
+            setPhase('listening');
+          }
+          setTranscript('');
+          pushTaskToast({
+            id: `err:${Date.now()}`,
+            kind: 'question',
+            text: 'Something went wrong — please try again.',
+            bornAt: Date.now(),
+            ttlMs: FLASH_TOAST_TTL_MS,
+          });
+          resetIdleWatchdog();
+          return;
+        }
         void stop(`server_error:${ev.code}`);
         return;
       }
@@ -543,6 +587,7 @@ export function useAgentSession(): UseAgentSessionResult {
       await streamIterationPromiseRef.current.catch(() => {});
     }
     liveTranscriptHighWaterRef.current = '';
+    setTranscriptTail('');
     const w = asrRef.current;
     if (!w) return;
     let gen;
@@ -558,20 +603,24 @@ export function useAgentSession(): UseAgentSessionResult {
           if (!yielded) continue;
           const committed = yielded.committed?.text ?? '';
           const nonCommitted = yielded.nonCommitted?.text ?? '';
-          const live = `${committed} ${nonCommitted}`.replace(/\s+/g, ' ').trim();
+          const live = committed.replace(/\s+/g, ' ').trim();
           if (__DEV__) {
             console.log(
               `[agent] stream yield committed="${committed.slice(0, 60)}" non="${nonCommitted.slice(0, 60)}"`,
             );
           }
-          // Monotonic: only update if new text is longer than what we've
-          // already shown. Whisper's `committed` shrinks mid-segment as the
-          // streaming algorithm advances its window; without this guard the
-          // visible transcript jumps backwards and looks "cut off".
+          // `committed` is the stable, append-only prefix — drives the solid
+          // transcript via the monotonic high-water guard (also protects Whisper,
+          // whose committed can shrink mid-segment).
           if (live.length > liveTranscriptHighWaterRef.current.length) {
             liveTranscriptHighWaterRef.current = live;
             setTranscript(live);
           }
+          // `nonCommitted` is the live, not-yet-confirmed tail — shown faint so
+          // the display keeps up with speech without freezing while the committed
+          // prefix waits for two decodes to agree. It refines/clears as words
+          // settle, which is fine because it's visually marked as tentative.
+          setTranscriptTail(nonCommitted.replace(/\s+/g, ' ').trim());
         }
       } catch {
         // ignored — stream was stopped externally
@@ -582,7 +631,10 @@ export function useAgentSession(): UseAgentSessionResult {
   }, []);
 
   const start = useCallback(
-    async (date: string) => {
+    async (dateArg?: string) => {
+      // Default to the day the user is viewing in the todo tab (set via
+      // setViewedDate); fall back to today. This is what the agent schedules on.
+      const date = dateArg ?? viewedDateRef.current;
       if (__DEV__) console.log('[agent] start() called date=', date);
       if (wsRef.current || pcmStreamRef.current) {
         if (__DEV__) console.warn('[agent] start() ignored — already running');
@@ -689,6 +741,11 @@ export function useAgentSession(): UseAgentSessionResult {
 
             if (vadEvent?.type === 'speech_start') {
               resetIdleWatchdog();
+              // Trim accumulated silence / stale audio so the decode buffer
+              // stays bounded to this utterance (+ a short pre-roll). Without
+              // this the buffer grows across a session and decodes get slower
+              // and dirtier the longer voice mode is active.
+              asrRef.current?.beginUtterance?.();
               if (phaseRef.current === 'thinking') {
                 const thinkingFor =
                   thinkingStartedAtRef.current === 0
@@ -699,29 +756,41 @@ export function useAgentSession(): UseAgentSessionResult {
                 }
               }
             } else if (vadEvent?.type === 'speech_end') {
-              // Streaming-only: the executorch model runs ONE operation at a
-              // time, so we can't batch-transcribe() while stream() is active
-              // (it throws "model is currently generating"). Use the streamed
-              // high-water text as the final. streamStop finalizes the
-              // generator; the iteration's last yields land the complete text.
               const streamedSnapshot = liveTranscriptHighWaterRef.current;
+              const asr = asrRef.current;
               try {
-                asrRef.current?.streamStop();
+                asr?.streamStop();
               } catch {
                 // ignored
               }
               if (phaseRef.current === 'listening') setPhase('syncing');
               void (async () => {
-                // Wait for the stream generator to fully drain so the final
-                // yields are captured in the high-water mark.
+                // Authoritative end-of-utterance text. Moonshine exposes
+                // finalize() — a direct decode of the complete buffer — which is
+                // reliable even for short/unstable-prefix utterances where the
+                // streamed `committed` high-water never advanced. Whisper
+                // (executorch) has no finalize(), so fall back to the streamed
+                // high-water there.
+                let finalText = '';
+                if (asr?.finalize) {
+                  try {
+                    finalText = await asr.finalize();
+                  } catch {
+                    // ignored — fall back below
+                  }
+                }
+                // Drain the display generator so it's fully stopped before the
+                // next utterance opens a new one.
                 if (streamIterationPromiseRef.current) {
                   await streamIterationPromiseRef.current.catch(() => {});
                 }
-                const cleaned = cleanTranscript(
-                  liveTranscriptHighWaterRef.current.length >= streamedSnapshot.length
-                    ? liveTranscriptHighWaterRef.current
-                    : streamedSnapshot,
-                );
+                if (!finalText) {
+                  finalText =
+                    liveTranscriptHighWaterRef.current.length >= streamedSnapshot.length
+                      ? liveTranscriptHighWaterRef.current
+                      : streamedSnapshot;
+                }
+                const cleaned = cleanTranscript(finalText);
 
                 const isReal = cleaned.length >= MIN_REAL_TRANSCRIPT_CHARS;
                 if (!isReal) {
@@ -732,6 +801,7 @@ export function useAgentSession(): UseAgentSessionResult {
                     );
                   }
                   if (phaseRef.current === 'syncing') setPhase('listening');
+                  setTranscriptTail('');
                   pushTaskToast({
                     id: `flash:${Date.now()}`,
                     kind: 'question',
@@ -754,6 +824,7 @@ export function useAgentSession(): UseAgentSessionResult {
                 mutationsThisSegmentRef.current = 0;
                 setPhase('thinking');
                 setTranscript(cleaned);
+                setTranscriptTail('');
                 ws.send({
                   type: 'utterance_text',
                   client_seg_id: uuidv4(),
@@ -792,6 +863,11 @@ export function useAgentSession(): UseAgentSessionResult {
     const ws = wsRef.current;
     if (!ws) return;
     ws.send({ type: 'client_undo', n, client_op_id: uuidv4() });
+  }, []);
+
+  // The todo screen calls this when the viewed day changes; start() reads it.
+  const setViewedDate = useCallback((date: string) => {
+    if (date) viewedDateRef.current = date;
   }, []);
 
   useEffect(() => {
@@ -849,6 +925,7 @@ export function useAgentSession(): UseAgentSessionResult {
     phase,
     errorMessage,
     transcript,
+    transcriptTail,
     amplitude,
     lastUndoChip,
     idlePromptVisible,
@@ -859,5 +936,6 @@ export function useAgentSession(): UseAgentSessionResult {
     start,
     stop,
     clientUndo,
+    setViewedDate,
   };
 }

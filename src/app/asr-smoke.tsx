@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Button, ScrollView, StyleSheet, Text, View } from 'react-native';
 import LiveAudioStream from 'react-native-live-audio-stream';
 
-import { ASR_ENGINE, useActiveAsrStream } from '@/src/features/agent/lib/asr-engine';
+import { useActiveAsrStream } from '@/src/features/agent/lib/asr-engine';
 
 const AUDIO_OPTIONS = {
   sampleRate: 16000,
@@ -24,7 +24,7 @@ function int16Base64ToFloat32(b64: string): Float32Array {
 }
 
 export default function AsrSmokeScreen() {
-  // Exercises whichever engine ASR_ENGINE selects (Moonshine by default).
+  // Exercises the active on-device ASR engine (Moonshine).
   const stt = useActiveAsrStream();
   const [recording, setRecording] = useState(false);
   const [transcript, setTranscript] = useState('');
@@ -95,7 +95,7 @@ export default function AsrSmokeScreen() {
     <>
       <Stack.Screen options={{ title: 'ASR Smoke' }} />
       <View style={styles.container}>
-        <Text style={styles.label}>Engine: {ASR_ENGINE}</Text>
+        <Text style={styles.label}>Engine: Moonshine</Text>
         <Text style={styles.label}>
           isReady: {String(stt.isReady)} · downloadProgress:{' '}
           {(stt.downloadProgress * 100).toFixed(0)}%
