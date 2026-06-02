@@ -1,0 +1,20 @@
+{
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "dotenv": "^17.4.2",
+    "matplotlib": "^1.0.0",
+    "node-fetch": "^3.3.2",
+    "ollama": "^0.6.3"
+  },
+  "name": "training_lstm",
+  "version": "1.0.0",
+  "description": "",
+  "main": "gemma.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module"
+}
