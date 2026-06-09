@@ -12,7 +12,11 @@ export default function TabsLayout() {
   const onTodo = pathname === '/' || pathname === '/todo' || pathname.endsWith('/todo');
 
   const agent = useAgentSessionCtx();
-  const agentActive = agent.phase !== 'idle';
+  // 'loading' (ASR model warming on cold start, or a failed load that never
+  // flips isReady) is NOT voice activity — it must not hide the calendar tab.
+  // Mirror the FloatingMic's definition: active = a real voice session, i.e.
+  // anything past idle/loading.
+  const agentActive = agent.phase !== 'idle' && agent.phase !== 'loading';
 
   const scheme = useColorScheme() ?? 'light';
   const isDark = scheme === 'dark';

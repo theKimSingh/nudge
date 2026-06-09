@@ -27,6 +27,10 @@ import { createPcmStream } from '../lib/pcm-stream';
 import { createVad } from '../lib/vad';
 import { cleanTranscript } from '../lib/clean-transcript';
 import { emitTranscript } from '../lib/transcript-handler';
+// Apple Foundation Model reasoning path (Qwen set aside via REASONING_BACKEND).
+import { REASONING_BACKEND } from '../lib/reasoning-backend';
+import { extractEvent, isAvailable as appleFmAvailable, type AppleEvent } from '../lib/apple-fm';
+import { runAppleSelfTest } from '../lib/apple-fm-selftest';
 
 export type AgentSessionPhase =
   | 'idle'
@@ -141,7 +145,8 @@ async function requestMicPermission(): Promise<{ granted: boolean; canAskAgain: 
 }
 
 export function useAgentSession(): UseAgentSessionResult {
-  const { applyServerInsert, applyServerUpdate, applyServerDelete } = useTasks();
+  const { applyServerInsert, applyServerUpdate, applyServerDelete, addTaskInstance } =
+    useTasks();
 
   // On-device ASR hook (Moonshine, via asr-engine.ts). Mounts once for the
   // lifetime of the session provider and exposes a generator API for streaming
@@ -212,6 +217,26 @@ export function useAgentSession(): UseAgentSessionResult {
       vadRef.current?.reset();
     }
   }, [phase]);
+
+  // Apple Foundation Model: log availability at mount and (DEV) run the on-device
+  // self-test audit so you can see outputs are correct without speaking.
+  useEffect(() => {
+    if (REASONING_BACKEND !== 'apple') return;
+    let cancelled = false;
+    const t = setTimeout(() => {
+      if (cancelled) return;
+      void appleFmAvailable()
+        .then((a) => {
+          console.log(`[apple-fm] availability: ${a.available} ${a.reason}`);
+          if (a.available && __DEV__) return runAppleSelfTest();
+        })
+        .catch((e) => console.warn('[apple-fm] availability check failed:', e?.message));
+    }, 2500);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, []);
 
   // Reflect the on-device model's readiness in the phase machine. While the
   // model is downloading on first launch we surface "Loading speech model…"
@@ -644,6 +669,80 @@ export function useAgentSession(): UseAgentSessionResult {
     })();
   }, []);
 
+  // Apple Foundation Model reasoning (Qwen set aside). Maps the extracted event
+  // onto a task and inserts it via the tasks context so it shows in the UI.
+  const createTaskFromAppleEvent = useCallback(
+    async (event: AppleEvent) => {
+      if (!event.title) {
+        if (__DEV__) console.warn('[apple] no title — skipping task create');
+        return;
+      }
+      const parseHHmm = (s: string | null): number | null => {
+        if (!s) return null;
+        const m = s.match(/^(\d{1,2}):(\d{2})$/);
+        if (!m) return null;
+        const mins = parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+        return mins >= 0 && mins <= 1439 ? mins : null;
+      };
+      const start = parseHHmm(event.start_time);
+      const end = parseHHmm(event.end_time);
+      const time_minutes = start ?? 540;
+      const duration_minutes =
+        start != null && end != null && end > start ? end - start : 60;
+      try {
+        await addTaskInstance({
+          title: event.title,
+          date: event.date || viewedDateRef.current,
+          time_minutes,
+          duration_minutes,
+          done: false,
+          repeat_rule: event.repeats ?? 'none',
+        });
+        if (__DEV__) {
+          console.log(
+            `[apple] task created: "${event.title}" ${event.date} t=${time_minutes} dur=${duration_minutes}`,
+          );
+        }
+      } catch (e: any) {
+        console.warn('[apple] task create failed:', e?.message);
+      }
+    },
+    [addTaskInstance],
+  );
+
+  // One utterance → on-device Apple FM event extraction → log + create task.
+  const runAppleSegment = useCallback(
+    async (transcript: string) => {
+      setPhase('thinking');
+      setTranscript(transcript);
+      setTranscriptTail('');
+      try {
+        const { event, raw } = await extractEvent(transcript, viewedDateRef.current);
+        console.log('[apple] transcript:', JSON.stringify(transcript));
+        console.log('[apple] event:', JSON.stringify(event));
+        if (__DEV__) console.log('[apple] raw model output:', raw);
+        await createTaskFromAppleEvent(event);
+      } catch (e: any) {
+        const msg = String(e?.message || 'error');
+        console.warn('[apple] extraction failed:', msg);
+        pushTaskToast({
+          id: `afm-err:${Date.now()}`,
+          kind: 'question',
+          text: /unavailable|not available|intelligence/i.test(msg)
+            ? 'Apple Intelligence unavailable'
+            : 'Could not process that',
+          bornAt: Date.now(),
+          ttlMs: FLASH_TOAST_TTL_MS,
+        });
+      } finally {
+        if (phaseRef.current === 'thinking' || phaseRef.current === 'syncing') {
+          setPhase('listening');
+        }
+      }
+    },
+    [createTaskFromAppleEvent, pushTaskToast],
+  );
+
   const start = useCallback(
     async (dateArg?: string) => {
       // Default to the day the user is viewing in the todo tab (set via
@@ -836,8 +935,13 @@ export function useAgentSession(): UseAgentSessionResult {
                 mutationsThisSegmentRef.current = 0;
                 setTranscript(cleaned);
                 setTranscriptTail('');
-                emitTranscript(cleaned, uuidv4());
-                if (phaseRef.current === 'syncing') setPhase('listening');
+                if (REASONING_BACKEND === 'apple') {
+                  // On-device Apple FM: extract event → log → create task.
+                  void runAppleSegment(cleaned);
+                } else {
+                  emitTranscript(cleaned, uuidv4());
+                  if (phaseRef.current === 'syncing') setPhase('listening');
+                }
                 void startStreamIteration();
               })();
             }
@@ -870,6 +974,7 @@ export function useAgentSession(): UseAgentSessionResult {
       handleEvent,
       pushTaskToast,
       resetIdleWatchdog,
+      runAppleSegment,
       startStreamIteration,
       stop,
     ],

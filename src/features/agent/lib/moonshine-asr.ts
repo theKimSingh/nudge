@@ -162,9 +162,15 @@ export function useMoonshineStream(): AsrStream {
         engineRef.current = engine;
         setDownloadProgress(1);
         setIsReady(true);
+        if (__DEV__) console.log('[asr] Moonshine engine ready');
       })
       .catch((e: unknown) => {
         if (cancelled) return;
+        // CRITICAL: a load failure here leaves isReady=false forever, which the
+        // UI reads as a permanent 'loading' phase (mic disabled, calendar hidden).
+        // Log it loudly — it was previously swallowed into state with no console
+        // output, making "stuck loading" impossible to diagnose.
+        console.error('[asr] Moonshine engine FAILED to load:', e);
         setError(e instanceof Error ? e : new Error(String(e)));
       });
     // The engine is module-memoized and the provider mounts once for the app
