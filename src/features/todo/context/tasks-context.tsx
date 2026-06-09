@@ -15,6 +15,7 @@ import { inferCategory } from '../categorize';
 import type { TaskCategory } from '@/src/types/database';
 import { supabase } from '@/src/backend/supabase';
 import { uuidv4 } from '@/src/lib/uuid';
+import { useCelebration } from '@/src/features/celebration/celebration-context';
 
 // `category` is optional at the API boundary so callers don't have to think
 // about categorization — we infer from the title here if it's omitted.
@@ -80,6 +81,7 @@ function toTaskInsert(task: Task) {
 }
 
 export function TasksProvider({ children }: { children: ReactNode }) {
+  const { celebrate } = useCelebration();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
   const [session, setSession] = useState<Session | null>(null);
@@ -253,6 +255,12 @@ export function TasksProvider({ children }: { children: ReactNode }) {
 
         if (!previousTask || nextDone === undefined) return;
 
+        // Fire confetti + haptic every time a task is checked off. Toggling back
+        // off doesn't fire — only completion does.
+        if (nextDone) {
+          celebrate();
+        }
+
         const rollbackTask = previousTask;
 
         try {
@@ -342,7 +350,7 @@ export function TasksProvider({ children }: { children: ReactNode }) {
         setTasks((cur) => cur.filter((t) => !idSet.has(t.id)));
       },
     }),
-    [tasks, loading, session]
+    [tasks, loading, session, celebrate]
   );
 
   return (

@@ -30,7 +30,6 @@ import { emitTranscript } from '../lib/transcript-handler';
 // Apple Foundation Model reasoning path (Qwen set aside via REASONING_BACKEND).
 import { REASONING_BACKEND } from '../lib/reasoning-backend';
 import { extractEvent, isAvailable as appleFmAvailable, type AppleEvent } from '../lib/apple-fm';
-import { runAppleSelfTest } from '../lib/apple-fm-selftest';
 
 export type AgentSessionPhase =
   | 'idle'
@@ -228,7 +227,6 @@ export function useAgentSession(): UseAgentSessionResult {
       void appleFmAvailable()
         .then((a) => {
           console.log(`[apple-fm] availability: ${a.available} ${a.reason}`);
-          if (a.available && __DEV__) return runAppleSelfTest();
         })
         .catch((e) => console.warn('[apple-fm] availability check failed:', e?.message));
     }, 2500);
@@ -698,6 +696,16 @@ export function useAgentSession(): UseAgentSessionResult {
           done: false,
           repeat_rule: event.repeats ?? 'none',
         });
+        // Success chip — "Added Gym at 6pm" (same toast the agent path uses).
+        pushTaskToast({
+          id: `apple-added:${Date.now()}:${event.title}`,
+          kind: 'added',
+          title: event.title,
+          time_minutes,
+          duration_minutes,
+          repeat_rule: event.repeats ?? 'none',
+          bornAt: Date.now(),
+        });
         if (__DEV__) {
           console.log(
             `[apple] task created: "${event.title}" ${event.date} t=${time_minutes} dur=${duration_minutes}`,
@@ -707,7 +715,7 @@ export function useAgentSession(): UseAgentSessionResult {
         console.warn('[apple] task create failed:', e?.message);
       }
     },
-    [addTaskInstance],
+    [addTaskInstance, pushTaskToast],
   );
 
   // One utterance → on-device Apple FM event extraction → log + create task.
@@ -717,11 +725,14 @@ export function useAgentSession(): UseAgentSessionResult {
       setTranscript(transcript);
       setTranscriptTail('');
       try {
-        const { event, raw } = await extractEvent(transcript, viewedDateRef.current);
+        const { events, raw } = await extractEvent(transcript, viewedDateRef.current);
         console.log('[apple] transcript:', JSON.stringify(transcript));
-        console.log('[apple] event:', JSON.stringify(event));
+        console.log('[apple] events:', JSON.stringify(events));
         if (__DEV__) console.log('[apple] raw model output:', raw);
-        await createTaskFromAppleEvent(event);
+        // Create a task for EVERY event the model returned (not just the first).
+        for (const event of events) {
+          await createTaskFromAppleEvent(event);
+        }
       } catch (e: any) {
         const msg = String(e?.message || 'error');
         console.warn('[apple] extraction failed:', msg);

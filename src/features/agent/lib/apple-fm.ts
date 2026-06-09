@@ -79,14 +79,16 @@ function buildSystemPrompt(todayISO: string): string {
     'Saturday',
   ][new Date(y, m - 1, d).getDay()];
 
-  // Kim's validated prompt — keep it byte-for-byte so the measured accuracy holds.
+  // Based on Kim's validated prompt; relaxed to allow MULTIPLE events per
+  // utterance ("breakfast at 7 and gym at 6" → two objects) since users speak
+  // several at once.
   return `You are a helpful assistant that extracts event details.
     Today's date is ${todayISO} (${dayName}).
-    Extract event details from the user's text. To determine the correct "date", use ${todayISO} as your anchor point.
+    Extract EVERY event mentioned in the user's text. To determine the correct "date", use ${todayISO} as your anchor point.
 
-    LIMITATION: Exactly one event is changed/added/modified per prompt. If there is no end time provided, assume the event is 1 hour long.
+    If there is no end time provided, assume the event is 1 hour long.
     If the input text contains an explicit date in parentheses, e.g., (YYYY-MM-DD), you MUST use this date for the "date" field.
-    You MUST respond with a list containing a single JSON object containing ONLY these keys:
+    You MUST respond with a JSON list containing ONE object PER event mentioned (usually one; more if the user names several), each containing ONLY these keys:
     "id" (integer tracking the event), "title", "date" (Strict format: YYYY-MM-DD), "start_time" (Strict format: HH:mm 24-hour clock), "end_time" (Strict format: HH:mm 24-hour clock), "repeats" ("daily", "weekdays", "weekly", or null)
     If a field is missing, unknown, or being explicitly cleared, use null. Output your response strictly as a raw JSON list, do not wrap it in markdown block tags.`;
 }
@@ -99,7 +101,7 @@ function buildSystemPrompt(todayISO: string): string {
 export async function extractEvent(
   transcript: string,
   todayISO: string,
-): Promise<{ event: AppleEvent; preprocessed: string; raw: string }> {
+): Promise<{ events: AppleEvent[]; preprocessed: string; raw: string }> {
   const preprocessed = appendDatesToDayNames(transcript, todayISO);
   if (__DEV__ && preprocessed !== transcript) {
     console.log(`[apple-fm] heuristic: "${preprocessed}"`);
@@ -120,15 +122,19 @@ export async function extractEvent(
   } catch {
     throw new Error(`Apple FM returned non-JSON: ${clean.slice(0, 200)}`);
   }
-  const rawEvent = (Array.isArray(parsed) ? parsed[0] : parsed) as Partial<AppleEvent>;
 
-  const event: AppleEvent = {
-    id: rawEvent?.id ?? null,
-    title: rawEvent?.title ?? null,
-    date: rawEvent?.date ?? null,
-    start_time: rawEvent?.start_time ?? null,
-    end_time: rawEvent?.end_time ?? null,
-    repeats: (rawEvent?.repeats as AppleEvent['repeats']) ?? null,
-  };
-  return { event, preprocessed, raw };
+  // The model returns a JSON list — ONE object per event mentioned (e.g.
+  // "breakfast at 7 and gym at 6" → two). Map ALL of them, not just the first.
+  const list = Array.isArray(parsed) ? parsed : [parsed];
+  const events: AppleEvent[] = list
+    .filter((e): e is Partial<AppleEvent> => !!e && typeof e === 'object')
+    .map((e) => ({
+      id: e.id ?? null,
+      title: e.title ?? null,
+      date: e.date ?? null,
+      start_time: e.start_time ?? null,
+      end_time: e.end_time ?? null,
+      repeats: (e.repeats as AppleEvent['repeats']) ?? null,
+    }));
+  return { events, preprocessed, raw };
 }
