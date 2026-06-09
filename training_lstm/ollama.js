@@ -6,25 +6,28 @@ import fs from 'fs';
 // ======================
 
 const testSuite = JSON.parse(
-  fs.readFileSync('./synthetic_event_extraction_dataset.json', 'utf-8')
+  fs.readFileSync('./test.json', 'utf-8')
 );
 
 // ======================
 // SAFE JSON EXTRACTION
 // ======================
 
-function extractFirstJSONObject(text) {
+function extractFirstJSONValue(text) {
   const firstBrace = text.indexOf('{');
+  const firstBracket = text.indexOf('[');
+  const starts = [firstBrace, firstBracket].filter((i) => i !== -1);
 
-  if (firstBrace === -1) {
-    throw new Error('No JSON object found');
+  if (!starts.length) {
+    throw new Error('No JSON value found');
   }
 
-  let braceCount = 0;
+  const firstJson = Math.min(...starts);
+  const stack = [];
   let inString = false;
   let escaped = false;
 
-  for (let i = firstBrace; i < text.length; i++) {
+  for (let i = firstJson; i < text.length; i++) {
     const char = text[i];
 
     if (escaped) {
@@ -42,16 +45,44 @@ function extractFirstJSONObject(text) {
     }
 
     if (!inString) {
-      if (char === '{') braceCount++;
-      if (char === '}') braceCount--;
+      if (char === '{') stack.push('}');
+      if (char === '[') stack.push(']');
 
-      if (braceCount === 0) {
-        return text.slice(firstBrace, i + 1);
+      if (char === '}' || char === ']') {
+        const expected = stack.pop();
+        if (char !== expected) {
+          throw new Error('Mismatched JSON delimiters');
+        }
+      }
+
+      if (stack.length === 0) {
+        return text.slice(firstJson, i + 1);
       }
     }
   }
 
-  throw new Error('Incomplete JSON object');
+  throw new Error('Incomplete JSON value');
+}
+
+function normalizeEvent(rawEvent) {
+  return {
+    id: rawEvent.id ?? null,
+    summary: rawEvent.summary ?? null,
+    date: rawEvent.date ?? null,
+    time: rawEvent.time ?? null,
+    duration:
+      rawEvent.duration !== undefined
+        ? Math.round(rawEvent.duration)
+        : null,
+    repeats: rawEvent.repeats ?? null,
+    repeat_custom: rawEvent.repeat_custom ?? null
+  };
+}
+
+function normalizeOutput(output) {
+  return Array.isArray(output)
+    ? output.map(normalizeEvent)
+    : normalizeEvent(output);
 }
 
 // ======================
@@ -71,21 +102,40 @@ TODAY = ${today}
 Return ONLY valid JSON.
 
 Schema:
+Single event:
 {
   "id": null,
   "summary": string,
-  "begin": "YYYY-MM-DDTHH:MM:SS",
-  "duration": integer,
-  "repeats": null | "daily" | "weekly" | "weekdays"
+  "date": "YYYY-MM-DD",
+  "time": "HH:MM:SS",
+  "duration": integer (in minutes),
+  "repeats": null | "daily" | "weekly" | "monthly" | "yearly" | "custom",
+  "repeat_custom": null | string
 }
+
+Multiple events:
+[
+  { event object },
+  { event object }
+]
 
 Rules:
 - tomorrow = TODAY + 1 day
 - weekday = next occurrence after TODAY
 - default duration = 60
 - default missing time = 09:00:00
+- calculate duration from time difference when both start and end times are known
+- use sensible activity-based defaults when only start time is known (doctor=60, meeting=30, etc)
+- return an array when the input creates multiple events
+- repeats daily for phrases like "every day"
+- repeats weekly for phrases like "every Monday" or "every week"
+- repeats monthly for phrases like "every month" or "monthly"
+- repeats yearly for phrases like "every year", "annually", or "yearly"
+- repeats custom for unsupported patterns like "weekdays", "Monday through Friday", "every 2 weeks", "every third Friday", or "every 3 months"
+- repeat_custom is null unless repeats is custom; when custom, store the original repeat pattern as concise text
 - remove dates/times from summary
 `;
+
 
   const qwenBaseUrl =
     process.env.QWEN_LOCAL_BASE_URL ||
@@ -145,8 +195,8 @@ Rules:
 
   try {
 
-    // extract ONLY first JSON object
-    const jsonOnly = extractFirstJSONObject(content);
+    // extract ONLY the first JSON object or array
+    const jsonOnly = extractFirstJSONValue(content);
 
     console.log('\n=== EXTRACTED JSON ===');
     console.log(jsonOnly);
@@ -163,22 +213,7 @@ Rules:
     throw err;
   }
 
-  const rawEvent = Array.isArray(parsedData)
-    ? parsedData[0]
-    : parsedData;
-
-  return {
-    id: rawEvent.id ?? null,
-    summary: rawEvent.summary ?? null,
-    begin: rawEvent.begin
-      ? rawEvent.begin.split('.')[0]
-      : null,
-    duration:
-      rawEvent.duration !== undefined
-        ? Math.round(rawEvent.duration)
-        : null,
-    repeats: rawEvent.repeats ?? null
-  };
+  return normalizeOutput(parsedData);
 }
 
 // ======================
@@ -217,31 +252,10 @@ async function runTestSuite() {
           mockToday
         );
 
-      const expected = Array.isArray(test.output)
-        ? test.output[0]
-        : test.output;
-
-      const summaryPass =
-        actual.summary === expected.summary;
-
-      const beginPass =
-        actual.begin === expected.begin;
-
-      const durationPass =
-        actual.duration === expected.duration;
-
-      const repeatsPass =
-        actual.repeats === expected.repeats;
-
-      const idPass =
-        actual.id === expected.id;
+      const expected = normalizeOutput(test.output);
 
       const passed =
-        summaryPass &&
-        beginPass &&
-        durationPass &&
-        repeatsPass &&
-        idPass;
+        JSON.stringify(actual) === JSON.stringify(expected);
 
       if (passed) {
 
@@ -263,15 +277,8 @@ async function runTestSuite() {
           JSON.stringify(actual, null, 2)
         );
 
-        console.log('\nChecks:');
-
-        console.log({
-          summaryPass,
-          beginPass,
-          durationPass,
-          repeatsPass,
-          idPass
-        });
+        console.log('\nOutput matches expected:');
+        console.log(passed);
       }
 
     } catch (err) {

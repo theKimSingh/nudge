@@ -70,6 +70,24 @@ mic ─► react-native-live-audio-stream (16 kHz int16 PCM, 250 ms chunks)
          ws.send({ type: 'utterance_text', text })  ─► backend Gemini agent loop
 ```
 
+### Example voice inputs
+
+**Adding tasks:**
+- "Add gym tomorrow at 7 AM for an hour"
+- "Schedule standup at 10:30 on Tuesday, make it 30 minutes"
+- "Breakfast, lunch, and dinner today"
+
+**Constraints & preferences:**
+- "No meetings before 10 AM" → stores a hard constraint
+- "I hate mornings" → stores a soft preference (low energy in early hours)
+- **"Don't schedule gym after 8 PM"** → stores an "avoid" constraint (do not do X after/before Y)
+- "I'm usually done with work by 6, reschedule that meeting to earlier"
+
+**Modifications:**
+- "Undo that" / "Scratch that" → reverts the last operation
+- "Move gym to 6 PM instead" → updates the most recent gym task
+- "Mark that done" → completes a task
+
 Key files: [src/features/agent/lib/pcm-stream.ts](src/features/agent/lib/pcm-stream.ts), [src/features/agent/lib/whisper-asr.ts](src/features/agent/lib/whisper-asr.ts), [src/features/agent/lib/vad.ts](src/features/agent/lib/vad.ts), [src/features/agent/hooks/use-agent-session.ts](src/features/agent/hooks/use-agent-session.ts).
 
 First launch downloads the Whisper Tiny EN Quantized model (~75 MB) via [react-native-executorch-expo-resource-fetcher](https://github.com/software-mansion/react-native-executorch); cached after.

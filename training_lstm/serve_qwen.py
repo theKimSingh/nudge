@@ -42,8 +42,23 @@ async def chat(req: ChatRequest):
         elif m["role"] == "user":
             user_msg = m["content"]
 
+    default_instructions = (
+        "Schema for each event: "
+        '{"id": null, "summary": string, '
+        '"begin": "YYYY-MM-DDTHH:MM:SS", '
+        '"end": "YYYY-MM-DDTHH:MM:SS", '
+        '"duration": integer, '
+        '"repeats": null | "daily" | "weekly" | "monthly" | "yearly" | "custom", '
+        '"repeat_custom": null | string}. '
+        "Use repeat_custom only when repeats is custom. "
+        "Return a JSON object for one event or a JSON array for multiple events."
+    )
+    instructions = system_msg.strip() or default_instructions
+
     prompt = (
         "Task: Extract event details as raw JSON.\n"
+        "Return a JSON object for one event or a JSON array for multiple events.\n"
+        f"Instructions:\n{instructions}\n"
         f"Input: {json.dumps(user_msg)}\n"
         "Output: "
     )
@@ -56,7 +71,7 @@ async def chat(req: ChatRequest):
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
-            max_new_tokens=256,
+            max_new_tokens=512,
             temperature=0.0,
             do_sample=False,
             repetition_penalty=1.1,
