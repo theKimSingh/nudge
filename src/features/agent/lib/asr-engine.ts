@@ -1,11 +1,11 @@
 // On-device ASR facade. Moonshine (sherpa-onnx) is the single engine; this
 // module exists to (a) define the minimal `AsrStream` contract the agent session
-// and smoke screen consume, and (b) expose `useActiveAsrStream` as a stable
-// indirection so callers don't import the engine implementation directly.
+// consumes, and (b) expose `useActiveAsrStream` as a stable indirection so
+// callers don't import the engine implementation directly.
 
 import { useMoonshineStream } from './moonshine-asr';
 
-/** The fields the agent session + smoke screen actually consume from the ASR. */
+/** The fields the agent session actually consumes from the ASR. */
 export type AsrStream = {
   /** True once the model is loaded/warm and ready to transcribe. */
   isReady: boolean;
@@ -28,6 +28,14 @@ export type AsrStream = {
   streamInsert(samples: Float32Array): void;
   /** Finalize the active stream; the generator drains and returns. */
   streamStop(): void;
+  /**
+   * Session-level reset: discard ALL buffered PCM and supersede any live
+   * generator. Unlike streamStop (which just ends the cadence loop) this wipes
+   * the utterance buffer, so a mic stop that never reached speech_end/finalize
+   * can't leave stale audio that the NEXT session's stream() re-decodes and
+   * shows as the previous transcript. Called from the session teardown.
+   */
+  reset?(): void;
   /**
    * Called at VAD speech_start. Lets the engine drop accumulated inter-utterance
    * silence / stale audio (keeping a small pre-roll) so the decode buffer doesn't

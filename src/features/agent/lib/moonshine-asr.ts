@@ -41,7 +41,7 @@ const SAMPLE_RATE = 16_000;
 // modern phone).
 const RERUN_CADENCE_MS = 350;
 // Don't transcribe sub-100ms slivers — nothing useful comes back.
-const MIN_SAMPLES = 3_200; // changed from 1600
+const MIN_SAMPLES = 3_200;
 // Moonshine generalizes poorly to clips <1s (it can emit repeated tokens /
 // WER>100% because <0.5% of its training data is sub-1s). Zero-pad short
 // buffers up to 1s before transcribing to dodge that failure mode.
@@ -281,8 +281,33 @@ export function useMoonshineStream(): AsrStream {
 
   function streamStop(): void {
     stopRef.current = true;
+    // Supersede the live generator too, not just set stopRef. The cadence loop
+    // only re-checks stopRef at the top of the while; after the wake below it
+    // would otherwise fall through and launch ONE more transcribeBuffer() on the
+    // current (possibly large) buffer before the loop condition catches the stop.
+    // teardown() awaits the generator promise, so that straggler decode wedged
+    // the whole mic-stop (stoppingRef stuck true → stop button dead). Bumping the
+    // token makes the generator hit `if (!current()) return` and exit before
+    // decoding. finalize() owns the authoritative end-of-utterance decode of the
+    // captured buffer, so live-display exit-early loses nothing.
+    streamGenRef.current += 1;
     // Interrupt the cadence sleep so the generator finalizes immediately.
     wakeRef.current?.();
+  }
+
+  // Session-level reset (see AsrStream.reset). streamStop only ends the cadence
+  // loop; it intentionally leaves bufferRef intact so finalize() can decode the
+  // complete utterance. But when a session is torn down WITHOUT a speech_end
+  // (mic toggled off mid-listening), no finalize() runs and that PCM lingers.
+  // The next session's stream() does not reset the buffer either, so its cadence
+  // loop re-decodes the leftover audio and the old transcript flashes back. Wipe
+  // it here and bump the generator token so any in-flight generator exits
+  // without emitting.
+  function reset(): void {
+    streamGenRef.current += 1;
+    stopRef.current = true;
+    wakeRef.current?.();
+    bufferRef.current = [];
   }
 
   // Authoritative end-of-utterance decode. Captures the COMPLETE buffer (the
@@ -313,6 +338,7 @@ export function useMoonshineStream(): AsrStream {
     stream,
     streamInsert,
     streamStop,
+    reset,
     finalize,
     beginUtterance,
   };

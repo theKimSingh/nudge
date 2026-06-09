@@ -1,9 +1,9 @@
 // Mic capture for the local ASR pipeline. Wraps react-native-live-audio-stream
 // and emits Float32 PCM chunks alongside an RMS-derived dB reading so the
-// session hook can drive Whisper streaming + the dB-threshold VAD + the
+// session hook can drive Moonshine streaming + the dB-threshold VAD + the
 // edge-glow amplitude SharedValue from a single source.
 //
-// 16 kHz mono int16 PCM is the format Whisper expects. The native library
+// 16 kHz mono int16 PCM is the format Moonshine expects. The native library
 // emits the base64-encoded bytes via `on('data', ...)`. We decode int16 →
 // float32 in [-1, 1] and compute RMS in dB clamped to [-90, 0] (matching the
 // range the old expo-audio metering produced, so the existing VAD thresholds
@@ -32,7 +32,7 @@ const SAMPLE_RATE = 16000;
 // is the byte count of one PCM chunk, NOT the sample count. At 16-bit mono,
 // 2 bytes/sample → 4000 bytes ≈ 2000 samples ≈ 125 ms per chunk. That gives
 // the live transcript ~8 updates/sec; tighter than 250 ms but still well
-// within Whisper's encoder budget on a modern phone.
+// within Moonshine's encoder budget on a modern phone.
 const BUFFER_BYTES = 4000;
 const RMS_FLOOR_DB = -90;
 

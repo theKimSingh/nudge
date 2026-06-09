@@ -1,8 +1,7 @@
 // Engine-agnostic transcript hygiene. On silent/near-silent audio, ASR models
 // occasionally emit literal compliance phrases ("thanks for watching"), bracketed
 // annotations ("[music]", "[ 0m0s900ms - 0m1s100ms ]"), or stray surrounding
-// quotes — none of which should reach the agent loop. Mirrors the regex guards
-// that used to live in backend/lib/gemini.js.
+// quotes — none of which should reach the agent loop.
 
 // Phrases the model sometimes returns when the audio is silent or near-silent
 // (ASR training data includes a lot of YouTube intros/outros that bleed through

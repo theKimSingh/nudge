@@ -26,6 +26,7 @@ import { useActiveAsrStream } from '../lib/asr-engine';
 import { createPcmStream } from '../lib/pcm-stream';
 import { createVad } from '../lib/vad';
 import { cleanTranscript } from '../lib/clean-transcript';
+import { emitTranscript } from '../lib/transcript-handler';
 
 export type AgentSessionPhase =
   | 'idle'
@@ -249,7 +250,20 @@ export function useAgentSession(): UseAgentSessionResult {
     wsRef.current = null;
     vadRef.current = null;
     liveTranscriptHighWaterRef.current = '';
+    // Clear the committed transcript SYNCHRONOUSLY (before the awaits below) so a
+    // slow ASR-generator drain can't let the previous utterance linger and bleed
+    // into the next session. Pairs with asr.reset() below + setTranscript('') in
+    // start().
+    setTranscript('');
     setTranscriptTail('');
+    // Session-level ASR reset: wipe any buffered PCM so a mic stop that never
+    // reached speech_end/finalize can't leave stale audio the NEXT session's
+    // stream() re-decodes as the previous transcript.
+    try {
+      asrRef.current?.reset?.();
+    } catch {
+      // ignored
+    }
 
     if (pcm) {
       try {
@@ -680,29 +694,23 @@ export function useAgentSession(): UseAgentSessionResult {
         return;
       }
 
-      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-      const wsUrl = joinUrl(toWsUrl(getBackendUrl()), '/agent/session');
-      if (__DEV__) console.log('[agent] ws url:', wsUrl);
-
       const vad = createVad();
       vadRef.current = vad;
 
-      const ws = connectAgentWs(
-        { url: wsUrl, getToken, date, tz },
-        {
-          onEvent: handleEvent,
-          onError: (err) => {
-            if (__DEV__) console.warn('[agent] ws error:', err.message);
-          },
-          onClose: (info) => {
-            if (__DEV__) console.warn('[agent] ws close:', info.code, info.reason);
-            if (phaseRef.current !== 'idle' && phaseRef.current !== 'loading') {
-              void stop(`ws_close:${info.code}:${info.reason}`);
-            }
-          },
-        },
-      );
+      // MODEL SEAM: the backend WebSocket (Gemini reasoning) is intentionally
+      // NOT connected. This branch is voice-input-only — mic → transcript →
+      // console (see ../lib/transcript-handler). A no-op handle keeps the
+      // existing ws.send()/close() call sites valid (harmless) without opening a
+      // socket or needing a backend. Restore connectAgentWs() — or, preferably,
+      // register a handler via setTranscriptHandler() — when the model lands.
+      const ws = {
+        send: () => {},
+        close: () => {},
+      } as unknown as AgentWsHandle;
       wsRef.current = ws;
+      // Unused now that the socket is stubbed; referenced to avoid lint churn.
+      void handleEvent;
+      void getToken;
 
       liveTranscriptHighWaterRef.current = '';
 
@@ -819,17 +827,17 @@ export function useAgentSession(): UseAgentSessionResult {
                   void startStreamIteration();
                   return;
                 }
-                // Real utterance — ship it.
+                // Real utterance — hand the finalized transcript to the model
+                // seam. With no model wired up this just console.logs it; a
+                // registered handler (the future Qwen) receives it here. No
+                // backend round-trip, so the mic stays hot (back to 'listening')
+                // instead of entering 'thinking'.
                 emptyTranscriptStreakRef.current = 0;
                 mutationsThisSegmentRef.current = 0;
-                setPhase('thinking');
                 setTranscript(cleaned);
                 setTranscriptTail('');
-                ws.send({
-                  type: 'utterance_text',
-                  client_seg_id: uuidv4(),
-                  text: cleaned,
-                });
+                emitTranscript(cleaned, uuidv4());
+                if (phaseRef.current === 'syncing') setPhase('listening');
                 void startStreamIteration();
               })();
             }
@@ -843,6 +851,14 @@ export function useAgentSession(): UseAgentSessionResult {
 
       try {
         await pcm.start();
+        // No backend handshake anymore — the WS used to flip us to 'listening'
+        // on its session_ready event. Go straight to listening once the mic is
+        // live (mirrors the on-device pipeline; the old connecting→session_ready
+        // dance is gone).
+        if (phaseRef.current !== 'idle' && phaseRef.current !== 'loading') {
+          setPhase('listening');
+          resetIdleWatchdog();
+        }
       } catch (e: any) {
         if (__DEV__) console.warn('[agent] pcm failed to start:', e?.message);
         await stop(`pcm_start_failed:${e?.message}`);

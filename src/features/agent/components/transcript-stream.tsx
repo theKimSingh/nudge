@@ -34,14 +34,11 @@ const PER_LINE_FADE = 0.22;
 // Opacity for the unconfirmed tail — clearly tentative but readable.
 const TAIL_ALPHA = 0.4;
 
-// Split a transcript into display words, stripping sentence punctuation
-// ("early." → "early", "p.m." → "pm"). The text sent to the agent keeps its
-// punctuation; only the rendered tokens are cleaned.
+// Split a transcript into display words, preserving punctuation so the rendered
+// transcript matches what ASR actually produced ("early." stays "early.",
+// "2:30" stays "2:30"). Punctuation rides on the trailing token of each word.
 function toWords(s: string): string[] {
-  return s
-    .split(/\s+/)
-    .map((w) => w.replace(/[.,!?;]+/g, ''))
-    .filter(Boolean);
+  return s.split(/\s+/).filter(Boolean);
 }
 
 export function TranscriptStream({ text, tail = '' }: Props) {
