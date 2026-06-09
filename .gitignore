@@ -54,4 +54,3 @@ backend/.env
 # Bundled Whisper model (fetch via npm run fetch-model)
 src/assets/models/*.pte
 src/assets/models/*.bin
-training_lstm/qwen3_0_6b_event_extractor/
