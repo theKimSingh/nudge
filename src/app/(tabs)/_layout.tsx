@@ -50,6 +50,10 @@ export default function TabsLayout() {
           <Icon sf="calendar" />
           <Label hidden>Calendar</Label>
         </NativeTabs.Trigger>
+        <NativeTabs.Trigger name="profile" hidden={agentActive && onTodo}>
+          <Icon sf="person.fill" />
+          <Label hidden>Profile</Label>
+        </NativeTabs.Trigger>
       </NativeTabs>
 
       {onTodo ? <FloatingMic /> : null}

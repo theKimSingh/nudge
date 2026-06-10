@@ -21,7 +21,9 @@ import { useAgentSessionCtx } from '@/src/features/agent/context/agent-session-c
 import { useColorScheme } from '@/src/hooks/use-color-scheme';
 
 const MIC_SIZE = TAB_BAR_HEIGHT;
-const SCREEN_EDGE_MARGIN = 52;
+// Pin the mic to the right wall with a small inset so it clears the centered
+// native tab pill instead of overlapping it.
+const SCREEN_EDGE_MARGIN = 16;
 
 // Halo tight around the 60px button: 100px total -> only 20px of glow per side.
 const HALO_SIZE = 100;

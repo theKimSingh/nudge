@@ -15,7 +15,7 @@ import {
 
 import { supabase } from '@/src/backend/supabase';
 import { useTasks } from '@/src/features/todo/context/tasks-context';
-import { type Task } from '@/src/features/todo/types';
+import { type Task, type RepeatRule, expandRepeatDates } from '@/src/features/todo/types';
 import { CATEGORY_IDS } from '@/src/features/todo/categorize';
 import { getBackendUrl } from '@/src/lib/backend-url';
 import { uuidv4 } from '@/src/lib/uuid';
@@ -29,7 +29,13 @@ import { cleanTranscript } from '../lib/clean-transcript';
 import { emitTranscript } from '../lib/transcript-handler';
 // Apple Foundation Model reasoning path (Qwen set aside via REASONING_BACKEND).
 import { REASONING_BACKEND } from '../lib/reasoning-backend';
-import { extractEvent, isAvailable as appleFmAvailable, type AppleEvent } from '../lib/apple-fm';
+import { extractOps, isAvailable as appleFmAvailable, type AppleOp } from '../lib/apple-fm';
+import {
+  loadAppleContext,
+  slidePastConflicts,
+  type AppleContext,
+  type Slot,
+} from '../lib/apple-context';
 
 export type AgentSessionPhase =
   | 'idle'
@@ -144,8 +150,15 @@ async function requestMicPermission(): Promise<{ granted: boolean; canAskAgain: 
 }
 
 export function useAgentSession(): UseAgentSessionResult {
-  const { applyServerInsert, applyServerUpdate, applyServerDelete, addTaskInstance } =
-    useTasks();
+  const {
+    applyServerInsert,
+    applyServerUpdate,
+    applyServerDelete,
+    addTaskInstance,
+    addTaskSeries,
+    editTask,
+    deleteTask,
+  } = useTasks();
 
   // On-device ASR hook (Moonshine, via asr-engine.ts). Mounts once for the
   // lifetime of the session provider and exposes a generator API for streaming
@@ -667,75 +680,208 @@ export function useAgentSession(): UseAgentSessionResult {
     })();
   }, []);
 
-  // Apple Foundation Model reasoning (Qwen set aside). Maps the extracted event
-  // onto a task and inserts it via the tasks context so it shows in the UI.
-  const createTaskFromAppleEvent = useCallback(
-    async (event: AppleEvent) => {
-      if (!event.title) {
-        if (__DEV__) console.warn('[apple] no title — skipping task create');
+  // Apply ONE Apple FM operation against the schedule: add a new task, UPDATE an
+  // existing one (by its E-handle → id), or REMOVE it. This is what makes "move
+  // gym to 7pm" edit the existing event instead of duplicating it.
+  const applyAppleOp = useCallback(
+    async (op: AppleOp, ctx: AppleContext, occupied: Slot[]) => {
+      // RULE — persist a standing preference as a constraint (used by future
+      // scheduling). Not an event, so no time handling.
+      if (op.action === 'rule') {
+        const text = (op.text ?? '').trim();
+        if (!text) return;
+        try {
+          await supabase.rpc('upsert_constraint', {
+            p_text: text,
+            p_category: 'other',
+            p_strength: op.strength ?? 'soft',
+          });
+          pushTaskToast({
+            id: `apple-rule:${Date.now()}`,
+            kind: 'question',
+            text: `Got it — ${text}`,
+            bornAt: Date.now(),
+            ttlMs: QUESTION_TOAST_TTL_MS,
+          });
+          if (__DEV__) console.log('[apple] rule saved:', text, op.strength);
+        } catch (e: any) {
+          console.warn('[apple] rule save failed:', e?.message);
+        }
         return;
       }
       const parseHHmm = (s: string | null): number | null => {
         if (!s) return null;
-        const m = s.match(/^(\d{1,2}):(\d{2})$/);
+        const m = s.trim().match(/^(\d{1,2}):(\d{2})$/);
         if (!m) return null;
-        const mins = parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+        let h = parseInt(m[1], 10);
+        const mm = parseInt(m[2], 10);
+        // 12-hour ambiguity: a single-digit hour 1–6 with no leading zero (e.g.
+        // "2:30") is almost always PM for scheduling ("class 2:30 to 3:50") — the
+        // model often forgets to convert. Leading-zero ("06:30") or h>=7 stays.
+        if (m[1].length === 1 && h >= 1 && h <= 6) h += 12;
+        const mins = h * 60 + mm;
         return mins >= 0 && mins <= 1439 ? mins : null;
       };
-      const start = parseHHmm(event.start_time);
-      const end = parseHHmm(event.end_time);
+      const start = parseHHmm(op.start_time);
+      const end = parseHHmm(op.end_time);
       const time_minutes = start ?? 540;
       const duration_minutes =
         start != null && end != null && end > start ? end - start : 60;
+      const targetId = op.target ? ctx.handleToId[op.target] : undefined;
+
+      // REMOVE
+      if (op.action === 'remove') {
+        if (!targetId) {
+          console.warn('[apple] remove: unknown target', op.target);
+          return;
+        }
+        const existing = ctx.schedule.find((s) => s.id === targetId);
+        try {
+          await deleteTask(targetId);
+          pushTaskToast({
+            id: `apple-rm:${Date.now()}`,
+            kind: 'removed',
+            title: existing?.title ?? op.title ?? 'event',
+            bornAt: Date.now(),
+          });
+          if (__DEV__) console.log('[apple] removed', op.target, existing?.title);
+        } catch (e: any) {
+          console.warn('[apple] remove failed:', e?.message);
+        }
+        return;
+      }
+
+      // UPDATE (falls back to ADD if the model gave no resolvable target)
+      if (op.action === 'update' && targetId) {
+        const patch: Record<string, unknown> = {};
+        if (op.title) patch.title = op.title;
+        if (op.date) patch.date = op.date;
+        if (start != null) patch.time_minutes = time_minutes;
+        if (start != null && end != null && end > start) patch.duration_minutes = duration_minutes;
+        if (op.repeats != null) patch.repeat_rule = op.repeats;
+        try {
+          // editTask() forwards to updateTask (which accepts date/time/etc.);
+          // its param TYPE omits `date`, so cast — runtime supports the full patch.
+          await editTask(targetId, patch as Parameters<typeof editTask>[1]);
+          pushTaskToast({
+            id: `apple-up:${Date.now()}`,
+            kind: 'updated',
+            title: op.title ?? ctx.schedule.find((s) => s.id === targetId)?.title ?? 'event',
+            time_minutes,
+            duration_minutes,
+            repeat_rule: op.repeats ?? 'none',
+            bornAt: Date.now(),
+          });
+          if (__DEV__) console.log('[apple] updated', op.target, JSON.stringify(patch));
+        } catch (e: any) {
+          console.warn('[apple] update failed:', e?.message);
+        }
+        return;
+      }
+
+      // ADD — also the fallback when an "update"/"remove" had no resolvable
+      // target: the model frequently emits {action:"update", target:"class",
+      // title:null} for a NEW event, putting its name in `target`. Recover that.
+      const addTitle = op.title || (op.target && !targetId ? op.target : null);
+      if (!addTitle) {
+        if (__DEV__) console.warn('[apple] add: no title — skipping');
+        return;
+      }
+      const repeat = (op.repeats ?? 'none') as RepeatRule;
+      const date = op.date || viewedDateRef.current;
+      // Meals go at the user's PROFILE meal time (the model guesses wrong, e.g.
+      // breakfast at 6:30 instead of 8:00). Keep the model's duration.
+      const tl = addTitle.toLowerCase();
+      let baseStart = time_minutes;
+      if (tl.includes('breakfast')) baseStart = ctx.profile?.breakfast_time_minutes ?? 480;
+      else if (tl.includes('lunch')) baseStart = ctx.profile?.lunch_time_minutes ?? 750;
+      else if (tl.includes('dinner')) baseStart = ctx.profile?.dinner_time_minutes ?? 1110;
+      // Slide past anything already booked that day so events don't overlap and
+      // "right after X" lands correctly even if the model stacked it on X.
+      const placedStart = slidePastConflicts(date, baseStart, duration_minutes, occupied);
+      occupied.push({ date, start: placedStart, end: placedStart + duration_minutes });
       try {
-        await addTaskInstance({
-          title: event.title,
-          date: event.date || viewedDateRef.current,
-          time_minutes,
-          duration_minutes,
-          done: false,
-          repeat_rule: event.repeats ?? 'none',
-        });
-        // Success chip — "Added Gym at 6pm" (same toast the agent path uses).
+        if (repeat === 'none') {
+          await addTaskInstance({
+            title: addTitle,
+            date,
+            time_minutes: placedStart,
+            duration_minutes,
+            done: false,
+            repeat_rule: 'none',
+          });
+        } else {
+          // Materialize the recurrence as a SERIES (one row per date) — same as
+          // the manual add UI — so a daily/weekly task actually appears every day.
+          const dates = expandRepeatDates(date, repeat);
+          await addTaskSeries(
+            {
+              title: addTitle,
+              time_minutes: placedStart,
+              duration_minutes,
+              done: false,
+              repeat_rule: repeat,
+            },
+            dates,
+          );
+        }
         pushTaskToast({
-          id: `apple-added:${Date.now()}:${event.title}`,
+          id: `apple-add:${Date.now()}:${addTitle}`,
           kind: 'added',
-          title: event.title,
-          time_minutes,
+          title: addTitle,
+          time_minutes: placedStart,
           duration_minutes,
-          repeat_rule: event.repeats ?? 'none',
+          repeat_rule: repeat,
           bornAt: Date.now(),
         });
         if (__DEV__) {
           console.log(
-            `[apple] task created: "${event.title}" ${event.date} t=${time_minutes} dur=${duration_minutes}`,
+            '[apple] added',
+            addTitle,
+            repeat === 'none' ? date : `${repeat} series`,
+            'at',
+            placedStart,
+            placedStart !== baseStart ? `(slid from ${baseStart})` : '',
           );
         }
       } catch (e: any) {
-        console.warn('[apple] task create failed:', e?.message);
+        console.warn('[apple] add failed:', e?.message);
       }
     },
-    [addTaskInstance, pushTaskToast],
+    [addTaskInstance, editTask, deleteTask, pushTaskToast],
   );
 
-  // One utterance → on-device Apple FM event extraction → log + create task.
+  // One utterance → load schedule/profile/constraints → on-device Apple FM →
+  // apply each op (add / update / remove).
   const runAppleSegment = useCallback(
     async (transcript: string) => {
       setPhase('thinking');
       setTranscript(transcript);
       setTranscriptTail('');
       try {
-        const { events, raw } = await extractEvent(transcript, viewedDateRef.current);
+        const { data } = await supabase.auth.getUser();
+        const userId = data.user?.id;
+        if (!userId) throw new Error('not signed in');
+
+        const ctx = await loadAppleContext(userId, viewedDateRef.current);
+        const { ops, raw } = await extractOps(transcript, viewedDateRef.current, ctx);
         console.log('[apple] transcript:', JSON.stringify(transcript));
-        console.log('[apple] events:', JSON.stringify(events));
+        console.log('[apple] schedule:', ctx.schedule.map((s) => `${s.handle}:${s.title}@${s.time_minutes}`).join(', ') || '(empty)');
+        console.log('[apple] ops:', JSON.stringify(ops));
         if (__DEV__) console.log('[apple] raw model output:', raw);
-        // Create a task for EVERY event the model returned (not just the first).
-        for (const event of events) {
-          await createTaskFromAppleEvent(event);
+        // Seed the "occupied" slots from the existing schedule so new events
+        // slide past conflicts (and past each other within this utterance).
+        const occupied: Slot[] = ctx.schedule.map((s) => ({
+          date: s.date,
+          start: s.time_minutes,
+          end: s.time_minutes + s.duration_minutes,
+        }));
+        for (const op of ops) {
+          await applyAppleOp(op, ctx, occupied);
         }
       } catch (e: any) {
         const msg = String(e?.message || 'error');
-        console.warn('[apple] extraction failed:', msg);
+        console.warn('[apple] segment failed:', msg);
         pushTaskToast({
           id: `afm-err:${Date.now()}`,
           kind: 'question',
@@ -751,7 +897,7 @@ export function useAgentSession(): UseAgentSessionResult {
         }
       }
     },
-    [createTaskFromAppleEvent, pushTaskToast],
+    [applyAppleOp, pushTaskToast],
   );
 
   const start = useCallback(
