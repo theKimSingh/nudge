@@ -20,6 +20,8 @@ type Props = {
   toasts: TaskToast[];
   /** Current live transcript (user's words). Takes the bottom slot when set. */
   transcript: string;
+  /** Unconfirmed trailing words, rendered faint after `transcript`. */
+  transcriptTail: string;
   /** Plain hint shown at the bottom when there's no transcript. */
   hint: string | null;
 };
@@ -49,7 +51,7 @@ function lineFor(toast: TaskToast): string {
   return `Updated ${toast.title}`;
 }
 
-export function FeedbackBand({ toasts, transcript, hint }: Props) {
+export function FeedbackBand({ toasts, transcript, transcriptTail, hint }: Props) {
   const scheme = useColorScheme() ?? 'light';
   const insets = useSafeAreaInsets();
   const dark = scheme === 'dark';
@@ -113,9 +115,9 @@ export function FeedbackBand({ toasts, transcript, hint }: Props) {
           })}
         </View>
       ) : null}
-      {transcript ? (
+      {transcript || transcriptTail ? (
         <View style={styles.transcriptSlot}>
-          <TranscriptStream text={transcript} />
+          <TranscriptStream text={transcript} tail={transcriptTail} />
         </View>
       ) : null}
       {hint ? (
@@ -158,13 +160,13 @@ const styles = StyleSheet.create({
   transcriptSlot: {
     width: '100%',
     alignItems: 'center',
-    // Hard ceiling so a runaway transcript can't push the band off the
-    // top of the screen. TranscriptStream also self-trims via MAX_TOKENS,
-    // but this clips any leftover overflow as the absolute backstop.
-    // Tokens that don't fit get clipped from the bottom (newer tokens at
-    // the bottom of the wrap) — acceptable since they'll fade out within
-    // a few seconds anyway.
-    maxHeight: 96,
+    // Bottom-anchor the wrapped transcript so the NEWEST lines sit just above
+    // the hint and stay fully visible; older lines grow upward. maxHeight caps
+    // the transcript at ~4 wrapped lines — anything taller clips from the TOP
+    // (oldest), which TranscriptStream's position fade has already dimmed, so
+    // the clip is imperceptible and the band can't run off the top of the screen.
+    justifyContent: 'flex-end',
+    maxHeight: 132,
     overflow: 'hidden',
     // Same shadow-buffer reasoning as chipStack — the transcript token
     // textShadowRadius (8) plus the hint textShadowRadius (10) can't

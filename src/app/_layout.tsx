@@ -14,12 +14,10 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import 'react-native-reanimated';
-import { initExecutorch } from 'react-native-executorch';
-import { ExpoResourceFetcher } from 'react-native-executorch-expo-resource-fetcher';
 import { AgentSessionProvider } from '../features/agent/context/agent-session-context';
 import { TasksProvider } from '../features/todo/context/tasks-context';
-
-initExecutorch({ resourceFetcher: ExpoResourceFetcher });
+import { CelebrationProvider } from '../features/celebration/celebration-context';
+import { CelebrationOverlay } from '../features/celebration/celebration-overlay';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -45,17 +43,20 @@ export default function RootLayout() {
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <TasksProvider>
-        <AgentSessionProvider>
-          <ThemeProvider value={DefaultTheme}>
-            <Stack>
-              <Stack.Screen name="(onboarding)" options={{ headerShown: false }} />
-              <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-            </Stack>
-            <StatusBar style="dark" />
-          </ThemeProvider>
-        </AgentSessionProvider>
-      </TasksProvider>
+      <CelebrationProvider>
+        <TasksProvider>
+          <AgentSessionProvider>
+            <ThemeProvider value={DefaultTheme}>
+              <Stack>
+                <Stack.Screen name="(onboarding)" options={{ headerShown: false }} />
+                <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+              </Stack>
+              <StatusBar style="dark" />
+              <CelebrationOverlay />
+            </ThemeProvider>
+          </AgentSessionProvider>
+        </TasksProvider>
+      </CelebrationProvider>
     </GestureHandlerRootView>
   );
 }

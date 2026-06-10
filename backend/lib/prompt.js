@@ -10,6 +10,12 @@ function buildSystemPrompt({
   const name = profile?.name || 'the user';
   const goal = profile?.goal || 'balance';
   const today = new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(new Date());
+  const todayWeekday = weekdayName(today);
+  const targetWeekday = weekdayName(target_date);
+  // Explicit weekday→date table for the next two weeks. LLMs are unreliable at
+  // computing "next Saturday" from a bare date string (off-by-one errors), so we
+  // give them exact dates to copy instead of doing the arithmetic themselves.
+  const upcomingDates = buildUpcomingDates(today, target_date, 14);
 
   const taskLines = (tasks || []).map((t) => {
     const repeat = t.repeat_rule && t.repeat_rule !== 'none' ? ` repeat=${t.repeat_rule}` : '';
@@ -50,6 +56,22 @@ function buildSystemPrompt({
 
   return `You are Nudge, a calendar/planning assistant. The user just spoke or typed a request about their schedule.
 
+NON-NEGOTIABLE — NO QUESTIONS, NO CONVERSATION
+You cannot talk back to the user or hold a back-and-forth — there is no follow-up
+turn, so a question is a dead end that strands the user. Every request must end
+exactly one of two ways:
+  (a) ACT — call the tool(s) that fulfill it, filling ANY unspecified detail from
+      the DEFAULTS below (time, duration, recurrence, category). If no name is
+      given, invent a short generic title from context — "Class", "Meeting",
+      "Workout", "Appointment", "Event" — NEVER ask for it. Then call
+      done(summary="...").
+  (b) DECLINE — only if the words are empty or too garbled to act on even with
+      defaults, call done(summary="Sorry, I couldn't make out a clear request.").
+NEVER end a turn with a question, a request for clarification, or bare text with
+no tool call. If you are tempted to ask "what is it called / what time / which
+one?", pick the sensible default and ACT instead. The user will issue a new
+request to correct you if needed. Always finish by calling done(...).
+
 USER PROFILE
 - Name: ${name}
 - Goal mode: ${goal}        (work | study | balance — bias schedule shape accordingly)
@@ -82,7 +104,13 @@ Normally, do NOT auto-create meal tasks. Two exceptions:
    lunch at 1 now"), call update_meal_default once to persist it. Do NOT
    call it for one-off changes ("today I'll eat at 1").
 
-NOW: ${nowStr} on ${today}
+NOW: ${nowStr} on ${todayWeekday} ${today} (the real current date).
+You are planning tasks for ${targetWeekday} ${target_date} — requests with NO explicit day go here.
+
+UPCOMING DATES — whenever the user NAMES a weekday ("Saturday", "this Friday",
+"next Tuesday", "every Thursday and Friday"), COPY the exact YYYY-MM-DD from this
+list. Do NOT calculate weekday dates yourself.
+${upcomingDates}
 
 DAY SECTION ANCHORS (this user's personal start times — use as DEFAULT placement)
 - morning:   ${minToHHMM(morningStartMin)}  (time_minutes ${morningStartMin})
@@ -90,8 +118,10 @@ DAY SECTION ANCHORS (this user's personal start times — use as DEFAULT placeme
 - evening:   ${minToHHMM(eveningStartMin)}  (time_minutes ${eveningStartMin})
 
 TIME / DATE INFERENCE
-- "today"          → ${target_date}
+- "today" / "this day" → ${target_date}
 - "tomorrow"       → ${tomorrow}
+- a named weekday ("Saturday", "this Saturday", "on Monday") → the FIRST row with that weekday in UPCOMING DATES. NEVER compute it — copy the date.
+- "next <weekday>" → the SECOND row with that weekday in UPCOMING DATES (the following week).
 - "morning"        → ${target_date}, anytime up to noon. **Default = morning anchor (${minToHHMM(morningStartMin)} = ${morningStartMin})** unless the user says otherwise.
 - "afternoon"      → ${target_date}, noon through ${minToHHMM(eveningStartMin)}. **Default = afternoon anchor (${minToHHMM(afternoonStartMin)} = ${afternoonStartMin})**. Do NOT push into evening unless the user explicitly says "late afternoon" or "evening".
 - "evening"        → ${target_date}, from ${minToHHMM(eveningStartMin)} onward. **Default = evening anchor (${minToHHMM(eveningStartMin)} = ${eveningStartMin})**.
@@ -164,15 +194,14 @@ that overlap the slot the new/moved task now occupies. Use it like this:
   - If \`overlaps_with\` is empty: just confirm the action briefly.
     "Added CSE 180 at 9:00 AM."
   - If \`overlaps_with\` has entries: cross-reference each id against the
-    EXISTING TASKS list above to get its title, then name the conflict in
-    your summary and ask the user what to do.
-    "Added CSE 180 at 9:00 AM — it overlaps Doctor appointment (8:55–9:40).
-     Want me to move the doctor appointment?"
+    EXISTING TASKS list above to get its title, then STATE the conflict in your
+    done summary as a plain fact — do NOT ask a question about it.
+    "Added CSE 180 at 9:00 AM — overlaps Doctor appointment (8:55–9:40)."
     "Moved Gym to 8:00 AM — note that overlaps Breakfast (8:05–8:35)."
 
 Do NOT preemptively pick a "safer" non-overlapping time. Trust the user's
 stated time. They saw their schedule when they asked; the overlap is
-intentional or they'll tell you to move the other task.
+intentional, or they'll issue a new request to move the other task.
 
 YOUR JOB
 Return a JSON object matching the supplied response schema with three sections: operations, new_constraints, reinforced_constraint_ids.
@@ -188,16 +217,17 @@ RULES — operations
    - If the user says "every day", "always", "every weekday", "every Monday", "permanently", "the whole series" → scope="series".
    - If the user says "from now on", "going forward", "this and future" → scope="this_and_future".
    - When ambiguous, scope="instance".
-6. DEFAULTS when unspecified: duration_minutes=30; time_minutes=540 (9:00). date defaults to ${target_date} for non-recurring events; for weekly recurrence, date MUST be the next occurrence of the named weekday on or after Today (use today if today IS that weekday).
+6. DEFAULTS when unspecified: duration_minutes=30; time_minutes=540 (9:00). date defaults to ${target_date} for non-recurring events; for weekly recurrence, date MUST be the FIRST row matching the named weekday in UPCOMING DATES (copy it — do not compute).
 7. time_minutes is local-timezone minutes from midnight (0-1439).
 8. repeat_rule for CREATE: one of "none","daily","weekdays","weekly". The schema has no list-of-weekdays option; see rule 8a.
-8a. MULTI-WEEKDAY RECURRENCES. If the user states one recurring event happens on multiple specific weekdays (e.g. "every Tuesday and Thursday", "Mon/Wed/Fri yoga"), emit ONE create op per weekday. Each op uses repeat_rule="weekly" with date set to the next occurrence of that weekday on or after Today. Same title, time_minutes, duration_minutes across the ops — the backend assigns a distinct series_id to each.
-    Examples (Today is ${today}):
-    - "every Tue and Thu at 11:30, CSE 480, 50 min" → TWO ops, both repeat_rule="weekly", time_minutes=690, duration_minutes=50, title="CSE 480"; one with date=<next Tuesday on/after Today>, the other with date=<next Thursday on/after Today>.
+8a. MULTI-WEEKDAY RECURRENCES. If the user states one recurring event happens on multiple specific weekdays (e.g. "every Tuesday and Thursday", "Mon/Wed/Fri yoga"), emit ONE create op per weekday. Each op uses repeat_rule="weekly" with date = the FIRST row matching that weekday in UPCOMING DATES (copy it — do NOT compute). Same title, time_minutes, duration_minutes across the ops — the backend assigns a distinct series_id to each and expands the weekly schedule from that date.
+    Examples:
+    - "every Tue and Thu at 11:30, CSE 480, 50 min" → TWO ops, both repeat_rule="weekly", time_minutes=690, duration_minutes=50, title="CSE 480"; one with date = the first Tuesday in UPCOMING DATES, the other with date = the first Thursday in UPCOMING DATES.
+    - "go to the gym every Thursday and Friday at 4:30pm" → TWO ops, both repeat_rule="weekly", time_minutes=990, duration_minutes=60, title="Gym"; dates = the first Thursday and first Friday in UPCOMING DATES.
     - "every weekend" → 2 ops (Sat + Sun), both repeat_rule="weekly".
     - "every weekday" / "Mon-Fri" → 1 op, repeat_rule="weekdays" (NOT five weekly ops).
     - "every day" → 1 op, repeat_rule="daily".
-    - "every Monday" → 1 op, repeat_rule="weekly", date=<next Monday on/after Today>.
+    - "every Monday" → 1 op, repeat_rule="weekly", date = the first Monday in UPCOMING DATES.
     - "every other week" / biweekly → 1 weekly op + 1 soft constraint capturing the biweekly intent (no native biweekly support).
 
 RULES — constraints
@@ -234,6 +264,34 @@ function addDays(yyyyMmDd, n) {
   const d = new Date(`${yyyyMmDd}T00:00:00Z`);
   d.setUTCDate(d.getUTCDate() + n);
   return d.toISOString().slice(0, 10);
+}
+
+const WEEKDAY_NAMES = [
+  'Sunday',
+  'Monday',
+  'Tuesday',
+  'Wednesday',
+  'Thursday',
+  'Friday',
+  'Saturday',
+];
+
+function weekdayName(yyyyMmDd) {
+  if (typeof yyyyMmDd !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(yyyyMmDd)) return '';
+  const d = new Date(`${yyyyMmDd}T00:00:00Z`);
+  return Number.isNaN(d.getTime()) ? '' : WEEKDAY_NAMES[d.getUTCDay()];
+}
+
+// Weekday→date reference for the next `days` days starting at `today`. The model
+// copies dates from here instead of computing weekday math (which it gets wrong).
+function buildUpcomingDates(today, targetDate, days) {
+  const lines = [];
+  for (let i = 0; i < days; i++) {
+    const date = addDays(today, i);
+    const tag = date === targetDate ? '   ← the day you are planning' : '';
+    lines.push(`- ${weekdayName(date)} ${date}${tag}`);
+  }
+  return lines.join('\n');
 }
 
 module.exports = { buildSystemPrompt, minToHHMM };

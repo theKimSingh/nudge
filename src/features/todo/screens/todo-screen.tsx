@@ -75,10 +75,15 @@ export function TodoScreen() {
   // Voice mode locks task interactions (checkbox, tap-to-edit, drag, swipe,
   // add). Scroll, section collapse, and weekly calendar day-tap stay enabled
   // so the user can still navigate the calendar while planning by voice.
-  const { phase: agentPhase } = useAgentSessionCtx();
+  const { phase: agentPhase, setViewedDate } = useAgentSessionCtx();
   const voiceMode = agentPhase !== 'idle';
 
   const selectedKey = useMemo(() => dateKey(selectedDate), [selectedDate]);
+  // Keep the agent's target day in sync with the day the user is viewing, so a
+  // voice request schedules onto this day rather than always today.
+  useEffect(() => {
+    setViewedDate(selectedKey);
+  }, [selectedKey, setViewedDate]);
   const tasks = useMemo(
     () => allTasks.filter((t) => t.date === selectedKey),
     [allTasks, selectedKey],

@@ -22,13 +22,18 @@ import { uuidv4 } from '@/src/lib/uuid';
 import type { TaskCategory } from '@/src/types/database';
 
 import { connectAgentWs, type ServerEvent } from '../lib/agent-ws';
+import { useActiveAsrStream } from '../lib/asr-engine';
 import { createPcmStream } from '../lib/pcm-stream';
 import { createVad } from '../lib/vad';
-import { cleanTranscript, useWhisperStream } from '../lib/whisper-asr';
+import { cleanTranscript } from '../lib/clean-transcript';
+import { emitTranscript } from '../lib/transcript-handler';
+// Apple Foundation Model reasoning path (Qwen set aside via REASONING_BACKEND).
+import { REASONING_BACKEND } from '../lib/reasoning-backend';
+import { extractEvent, isAvailable as appleFmAvailable, type AppleEvent } from '../lib/apple-fm';
 
 export type AgentSessionPhase =
   | 'idle'
-  // Whisper is downloading / warming on first launch. Mic is locked until
+  // ASR model is downloading / warming on first launch. Mic is locked until
   // isReady flips true.
   | 'loading'
   | 'connecting'
@@ -71,18 +76,22 @@ export type UseAgentSessionResult = {
   phase: AgentSessionPhase;
   errorMessage: string | null;
   transcript: string;
+  /** Unconfirmed trailing words being decoded — shown faint after `transcript`. */
+  transcriptTail: string;
   amplitude: SharedValue<number>;
   lastUndoChip: AgentUndoChip | null;
   idlePromptVisible: boolean;
   taskToasts: TaskToast[];
   actionsCompleted: number;
-  /** 0-1, Whisper model download progress on cold start. */
+  /** 0-1, ASR model acquisition progress on cold start. */
   downloadProgress: number;
   /** True once the on-device ASR model is warm and ready to record. */
   asrReady: boolean;
-  start(date: string): Promise<void>;
+  start(date?: string): Promise<void>;
   stop(reason?: string): Promise<void>;
   clientUndo(n?: number): void;
+  /** Set the day (YYYY-MM-DD) the agent should schedule on (the todo tab's viewed day). */
+  setViewedDate(date: string): void;
 };
 
 const IDLE_SOFT_MS = 30_000;
@@ -113,6 +122,11 @@ function joinUrl(base: string, path: string): string {
   return b + p;
 }
 
+function todayKey(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 async function requestMicPermission(): Promise<{ granted: boolean; canAskAgain: boolean }> {
   if (Platform.OS === 'android') {
     const status = await PermissionsAndroid.request(
@@ -130,25 +144,28 @@ async function requestMicPermission(): Promise<{ granted: boolean; canAskAgain: 
 }
 
 export function useAgentSession(): UseAgentSessionResult {
-  const { applyServerInsert, applyServerUpdate, applyServerDelete } = useTasks();
+  const { applyServerInsert, applyServerUpdate, applyServerDelete, addTaskInstance } =
+    useTasks();
 
-  // On-device ASR hook. Mounts once for the lifetime of the session provider;
-  // the model downloads on first cold start (~75MB Whisper Tiny EN quantized,
-  // cached after) and exposes a generator API for streaming partials.
+  // On-device ASR hook (Moonshine, via asr-engine.ts). Mounts once for the
+  // lifetime of the session provider and exposes a generator API for streaming
+  // partials. The model is bundled and extracted on first cold start; isReady
+  // flips true once it's warm and downloadProgress tracks acquisition.
   //
-  // IMPORTANT: useSpeechToText returns a FRESH object every render (no
-  // memoization in the executorch hook). Reading `whisper` directly inside
-  // useCallback / useEffect dependency arrays would make those callbacks
-  // unstable, causing cleanup effects to re-fire on every render — which
-  // manifests as the session opening + immediately sending cancel_session in
-  // a loop. We mirror through whisperRef so dependent callbacks stay stable.
-  const whisper = useWhisperStream();
-  const whisperRef = useRef(whisper);
-  whisperRef.current = whisper;
+  // IMPORTANT: the hook returns a FRESH object every render (no memoization).
+  // Reading `asr` directly inside useCallback / useEffect dependency arrays
+  // would make those callbacks unstable, causing cleanup effects to re-fire on
+  // every render — which manifests as the session opening + immediately sending
+  // cancel_session in a loop. We mirror through asrRef so dependent callbacks
+  // stay stable.
+  const asr = useActiveAsrStream();
+  const asrRef = useRef(asr);
+  asrRef.current = asr;
 
   const [phase, setPhase] = useState<AgentSessionPhase>('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<string>('');
+  const [transcriptTail, setTranscriptTail] = useState<string>('');
   const [lastUndoChip, setLastUndoChip] = useState<AgentUndoChip | null>(null);
   const [idlePromptVisible, setIdlePromptVisible] = useState(false);
   const [taskToasts, setTaskToasts] = useState<TaskToast[]>([]);
@@ -159,6 +176,10 @@ export function useAgentSession(): UseAgentSessionResult {
   const wsRef = useRef<AgentWsHandle | null>(null);
   const pcmStreamRef = useRef<PcmStreamHandle | null>(null);
   const vadRef = useRef<VadHandle | null>(null);
+  // The todo-tab day the user is viewing — the agent schedules on this date.
+  // A ref (not state) so updating it on day-swipes doesn't re-render the whole
+  // app subtree under the session provider; start() reads the latest at tap.
+  const viewedDateRef = useRef<string>(todayKey());
   const phaseRef = useRef<AgentSessionPhase>('idle');
   const stoppingRef = useRef(false);
   const taskChangesRef = useRef(0);
@@ -196,16 +217,35 @@ export function useAgentSession(): UseAgentSessionResult {
     }
   }, [phase]);
 
+  // Apple Foundation Model: log availability at mount and (DEV) run the on-device
+  // self-test audit so you can see outputs are correct without speaking.
+  useEffect(() => {
+    if (REASONING_BACKEND !== 'apple') return;
+    let cancelled = false;
+    const t = setTimeout(() => {
+      if (cancelled) return;
+      void appleFmAvailable()
+        .then((a) => {
+          console.log(`[apple-fm] availability: ${a.available} ${a.reason}`);
+        })
+        .catch((e) => console.warn('[apple-fm] availability check failed:', e?.message));
+    }, 2500);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, []);
+
   // Reflect the on-device model's readiness in the phase machine. While the
   // model is downloading on first launch we surface "Loading speech model…"
   // so the user knows why the mic is unresponsive.
   useEffect(() => {
-    if (!whisper.isReady && phaseRef.current === 'idle') {
+    if (!asr.isReady && phaseRef.current === 'idle') {
       setPhase('loading');
-    } else if (whisper.isReady && phaseRef.current === 'loading') {
+    } else if (asr.isReady && phaseRef.current === 'loading') {
       setPhase('idle');
     }
-  }, [whisper.isReady]);
+  }, [asr.isReady]);
 
   const clearIdleTimers = useCallback(() => {
     if (idleSoftTimerRef.current) {
@@ -233,6 +273,20 @@ export function useAgentSession(): UseAgentSessionResult {
     wsRef.current = null;
     vadRef.current = null;
     liveTranscriptHighWaterRef.current = '';
+    // Clear the committed transcript SYNCHRONOUSLY (before the awaits below) so a
+    // slow ASR-generator drain can't let the previous utterance linger and bleed
+    // into the next session. Pairs with asr.reset() below + setTranscript('') in
+    // start().
+    setTranscript('');
+    setTranscriptTail('');
+    // Session-level ASR reset: wipe any buffered PCM so a mic stop that never
+    // reached speech_end/finalize can't leave stale audio the NEXT session's
+    // stream() re-decodes as the previous transcript.
+    try {
+      asrRef.current?.reset?.();
+    } catch {
+      // ignored
+    }
 
     if (pcm) {
       try {
@@ -241,6 +295,22 @@ export function useAgentSession(): UseAgentSessionResult {
         // ignored
       }
     }
+
+    // Terminate the ASR streaming generator and drain it. The Moonshine adapter's
+    // stream() loops until streamStop() is called; without this, turning the mic
+    // off mid-listening (no speech_end) leaves the generator running with an
+    // unresolved promise — the next start() then hangs awaiting it and the old
+    // transcript bleeds into the new session.
+    try {
+      asrRef.current?.streamStop();
+    } catch {
+      // ignored
+    }
+    if (streamIterationPromiseRef.current) {
+      await streamIterationPromiseRef.current.catch(() => {});
+      streamIterationPromiseRef.current = null;
+    }
+
     if (ws) {
       try {
         ws.send({ type: 'cancel_session' });
@@ -263,7 +333,7 @@ export function useAgentSession(): UseAgentSessionResult {
     try {
       await teardown();
       taskChangesRef.current = 0;
-      setPhase(whisperRef.current?.isReady ? 'idle' : 'loading');
+      setPhase(asrRef.current?.isReady ? 'idle' : 'loading');
       setTranscript('');
       setErrorMessage(null);
       setIdlePromptVisible(false);
@@ -397,10 +467,16 @@ export function useAgentSession(): UseAgentSessionResult {
             patch.updated_at = payload.updated_at;
           }
           applyServerUpdate(taskId, patch);
+          // Use the BARE task title (the backend includes it in the payload),
+          // never journal.label — the label is already a full phrase like
+          // "Updated Leet Code", and feedback-band's lineFor() prepends "Updated"
+          // again, producing "Updated Updated Leet Code".
           const updatedTitle =
             typeof fields.title === 'string' && fields.title
               ? fields.title
-              : journal?.label ?? 'task';
+              : typeof payload.title === 'string' && payload.title
+                ? payload.title
+                : 'task';
           pushTaskToast({
             id: ev.call_id,
             kind: 'updated',
@@ -479,6 +555,11 @@ export function useAgentSession(): UseAgentSessionResult {
       }
       if (ev.type === 'agent_done') {
         if (phaseRef.current === 'thinking') setPhase('listening');
+        // If the turn changed nothing, the user's stale transcript is still on
+        // screen — clear it so "I'm listening…" returns instead of looking
+        // frozen. (Mutations already clear it via tool_result; a summary chip,
+        // if any, follows this event.)
+        if (mutationsThisSegmentRef.current === 0) setTranscript('');
         resetIdleWatchdog();
         thinkingStartedAtRef.current = 0;
         return;
@@ -510,6 +591,25 @@ export function useAgentSession(): UseAgentSessionResult {
       }
       if (ev.type === 'error') {
         if (__DEV__) console.warn('[agent] server error:', ev.code, ev.message);
+        // AGENT_FAILED is a transient model failure that survived the backend's
+        // retries; the WS session stays usable, so keep the mic alive and let
+        // the user retry by speaking instead of tearing everything down. Other
+        // codes (auth, prompt build) are fatal — stop.
+        if (ev.code === 'AGENT_FAILED') {
+          if (phaseRef.current === 'thinking' || phaseRef.current === 'syncing') {
+            setPhase('listening');
+          }
+          setTranscript('');
+          pushTaskToast({
+            id: `err:${Date.now()}`,
+            kind: 'question',
+            text: 'Something went wrong — please try again.',
+            bornAt: Date.now(),
+            ttlMs: FLASH_TOAST_TTL_MS,
+          });
+          resetIdleWatchdog();
+          return;
+        }
         void stop(`server_error:${ev.code}`);
         return;
       }
@@ -524,7 +624,8 @@ export function useAgentSession(): UseAgentSessionResult {
       await streamIterationPromiseRef.current.catch(() => {});
     }
     liveTranscriptHighWaterRef.current = '';
-    const w = whisperRef.current;
+    setTranscriptTail('');
+    const w = asrRef.current;
     if (!w) return;
     let gen;
     try {
@@ -539,20 +640,24 @@ export function useAgentSession(): UseAgentSessionResult {
           if (!yielded) continue;
           const committed = yielded.committed?.text ?? '';
           const nonCommitted = yielded.nonCommitted?.text ?? '';
-          const live = `${committed} ${nonCommitted}`.replace(/\s+/g, ' ').trim();
+          const live = committed.replace(/\s+/g, ' ').trim();
           if (__DEV__) {
             console.log(
               `[agent] stream yield committed="${committed.slice(0, 60)}" non="${nonCommitted.slice(0, 60)}"`,
             );
           }
-          // Monotonic: only update if new text is longer than what we've
-          // already shown. Whisper's `committed` shrinks mid-segment as the
-          // streaming algorithm advances its window; without this guard the
-          // visible transcript jumps backwards and looks "cut off".
+          // `committed` is the stable, append-only prefix — drives the solid
+          // transcript via the monotonic high-water guard (also protects Whisper,
+          // whose committed can shrink mid-segment).
           if (live.length > liveTranscriptHighWaterRef.current.length) {
             liveTranscriptHighWaterRef.current = live;
             setTranscript(live);
           }
+          // `nonCommitted` is the live, not-yet-confirmed tail — shown faint so
+          // the display keeps up with speech without freezing while the committed
+          // prefix waits for two decodes to agree. It refines/clears as words
+          // settle, which is fine because it's visually marked as tentative.
+          setTranscriptTail(nonCommitted.replace(/\s+/g, ' ').trim());
         }
       } catch {
         // ignored — stream was stopped externally
@@ -562,25 +667,115 @@ export function useAgentSession(): UseAgentSessionResult {
     })();
   }, []);
 
+  // Apple Foundation Model reasoning (Qwen set aside). Maps the extracted event
+  // onto a task and inserts it via the tasks context so it shows in the UI.
+  const createTaskFromAppleEvent = useCallback(
+    async (event: AppleEvent) => {
+      if (!event.title) {
+        if (__DEV__) console.warn('[apple] no title — skipping task create');
+        return;
+      }
+      const parseHHmm = (s: string | null): number | null => {
+        if (!s) return null;
+        const m = s.match(/^(\d{1,2}):(\d{2})$/);
+        if (!m) return null;
+        const mins = parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+        return mins >= 0 && mins <= 1439 ? mins : null;
+      };
+      const start = parseHHmm(event.start_time);
+      const end = parseHHmm(event.end_time);
+      const time_minutes = start ?? 540;
+      const duration_minutes =
+        start != null && end != null && end > start ? end - start : 60;
+      try {
+        await addTaskInstance({
+          title: event.title,
+          date: event.date || viewedDateRef.current,
+          time_minutes,
+          duration_minutes,
+          done: false,
+          repeat_rule: event.repeats ?? 'none',
+        });
+        // Success chip — "Added Gym at 6pm" (same toast the agent path uses).
+        pushTaskToast({
+          id: `apple-added:${Date.now()}:${event.title}`,
+          kind: 'added',
+          title: event.title,
+          time_minutes,
+          duration_minutes,
+          repeat_rule: event.repeats ?? 'none',
+          bornAt: Date.now(),
+        });
+        if (__DEV__) {
+          console.log(
+            `[apple] task created: "${event.title}" ${event.date} t=${time_minutes} dur=${duration_minutes}`,
+          );
+        }
+      } catch (e: any) {
+        console.warn('[apple] task create failed:', e?.message);
+      }
+    },
+    [addTaskInstance, pushTaskToast],
+  );
+
+  // One utterance → on-device Apple FM event extraction → log + create task.
+  const runAppleSegment = useCallback(
+    async (transcript: string) => {
+      setPhase('thinking');
+      setTranscript(transcript);
+      setTranscriptTail('');
+      try {
+        const { events, raw } = await extractEvent(transcript, viewedDateRef.current);
+        console.log('[apple] transcript:', JSON.stringify(transcript));
+        console.log('[apple] events:', JSON.stringify(events));
+        if (__DEV__) console.log('[apple] raw model output:', raw);
+        // Create a task for EVERY event the model returned (not just the first).
+        for (const event of events) {
+          await createTaskFromAppleEvent(event);
+        }
+      } catch (e: any) {
+        const msg = String(e?.message || 'error');
+        console.warn('[apple] extraction failed:', msg);
+        pushTaskToast({
+          id: `afm-err:${Date.now()}`,
+          kind: 'question',
+          text: /unavailable|not available|intelligence/i.test(msg)
+            ? 'Apple Intelligence unavailable'
+            : 'Could not process that',
+          bornAt: Date.now(),
+          ttlMs: FLASH_TOAST_TTL_MS,
+        });
+      } finally {
+        if (phaseRef.current === 'thinking' || phaseRef.current === 'syncing') {
+          setPhase('listening');
+        }
+      }
+    },
+    [createTaskFromAppleEvent, pushTaskToast],
+  );
+
   const start = useCallback(
-    async (date: string) => {
+    async (dateArg?: string) => {
+      // Default to the day the user is viewing in the todo tab (set via
+      // setViewedDate); fall back to today. This is what the agent schedules on.
+      const date = dateArg ?? viewedDateRef.current;
       if (__DEV__) console.log('[agent] start() called date=', date);
       if (wsRef.current || pcmStreamRef.current) {
         if (__DEV__) console.warn('[agent] start() ignored — already running');
         return;
       }
 
-      const w = whisperRef.current;
+      const w = asrRef.current;
       if (!w?.isReady) {
         setPhase('loading');
         if (__DEV__) {
           console.warn(
-            `[agent] whisper not ready, downloadProgress=${w?.downloadProgress ?? 0}`,
+            `[agent] asr not ready, downloadProgress=${w?.downloadProgress ?? 0}`,
           );
         }
         return;
       }
-      if (__DEV__) console.log('[agent] whisper ready, proceeding');
+      if (__DEV__) console.log('[agent] asr ready, proceeding');
 
       setErrorMessage(null);
       setTranscript('');
@@ -609,29 +804,23 @@ export function useAgentSession(): UseAgentSessionResult {
         return;
       }
 
-      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-      const wsUrl = joinUrl(toWsUrl(getBackendUrl()), '/agent/session');
-      if (__DEV__) console.log('[agent] ws url:', wsUrl);
-
       const vad = createVad();
       vadRef.current = vad;
 
-      const ws = connectAgentWs(
-        { url: wsUrl, getToken, date, tz },
-        {
-          onEvent: handleEvent,
-          onError: (err) => {
-            if (__DEV__) console.warn('[agent] ws error:', err.message);
-          },
-          onClose: (info) => {
-            if (__DEV__) console.warn('[agent] ws close:', info.code, info.reason);
-            if (phaseRef.current !== 'idle' && phaseRef.current !== 'loading') {
-              void stop(`ws_close:${info.code}:${info.reason}`);
-            }
-          },
-        },
-      );
+      // MODEL SEAM: the backend WebSocket (Gemini reasoning) is intentionally
+      // NOT connected. This branch is voice-input-only — mic → transcript →
+      // console (see ../lib/transcript-handler). A no-op handle keeps the
+      // existing ws.send()/close() call sites valid (harmless) without opening a
+      // socket or needing a backend. Restore connectAgentWs() — or, preferably,
+      // register a handler via setTranscriptHandler() — when the model lands.
+      const ws = {
+        send: () => {},
+        close: () => {},
+      } as unknown as AgentWsHandle;
       wsRef.current = ws;
+      // Unused now that the socket is stubbed; referenced to avoid lint churn.
+      void handleEvent;
+      void getToken;
 
       liveTranscriptHighWaterRef.current = '';
 
@@ -657,7 +846,7 @@ export function useAgentSession(): UseAgentSessionResult {
 
             // Feed Whisper's streaming generator for live partials.
             try {
-              whisperRef.current?.streamInsert(e.samples);
+              asrRef.current?.streamInsert(e.samples);
             } catch (err: any) {
               if (__DEV__) console.warn('[agent] streamInsert failed:', err?.message);
             }
@@ -670,6 +859,11 @@ export function useAgentSession(): UseAgentSessionResult {
 
             if (vadEvent?.type === 'speech_start') {
               resetIdleWatchdog();
+              // Trim accumulated silence / stale audio so the decode buffer
+              // stays bounded to this utterance (+ a short pre-roll). Without
+              // this the buffer grows across a session and decodes get slower
+              // and dirtier the longer voice mode is active.
+              asrRef.current?.beginUtterance?.();
               if (phaseRef.current === 'thinking') {
                 const thinkingFor =
                   thinkingStartedAtRef.current === 0
@@ -680,29 +874,41 @@ export function useAgentSession(): UseAgentSessionResult {
                 }
               }
             } else if (vadEvent?.type === 'speech_end') {
-              // Streaming-only: the executorch model runs ONE operation at a
-              // time, so we can't batch-transcribe() while stream() is active
-              // (it throws "model is currently generating"). Use the streamed
-              // high-water text as the final. streamStop finalizes the
-              // generator; the iteration's last yields land the complete text.
               const streamedSnapshot = liveTranscriptHighWaterRef.current;
+              const asr = asrRef.current;
               try {
-                whisperRef.current?.streamStop();
+                asr?.streamStop();
               } catch {
                 // ignored
               }
               if (phaseRef.current === 'listening') setPhase('syncing');
               void (async () => {
-                // Wait for the stream generator to fully drain so the final
-                // yields are captured in the high-water mark.
+                // Authoritative end-of-utterance text. Moonshine exposes
+                // finalize() — a direct decode of the complete buffer — which is
+                // reliable even for short/unstable-prefix utterances where the
+                // streamed `committed` high-water never advanced. Whisper
+                // (executorch) has no finalize(), so fall back to the streamed
+                // high-water there.
+                let finalText = '';
+                if (asr?.finalize) {
+                  try {
+                    finalText = await asr.finalize();
+                  } catch {
+                    // ignored — fall back below
+                  }
+                }
+                // Drain the display generator so it's fully stopped before the
+                // next utterance opens a new one.
                 if (streamIterationPromiseRef.current) {
                   await streamIterationPromiseRef.current.catch(() => {});
                 }
-                const cleaned = cleanTranscript(
-                  liveTranscriptHighWaterRef.current.length >= streamedSnapshot.length
-                    ? liveTranscriptHighWaterRef.current
-                    : streamedSnapshot,
-                );
+                if (!finalText) {
+                  finalText =
+                    liveTranscriptHighWaterRef.current.length >= streamedSnapshot.length
+                      ? liveTranscriptHighWaterRef.current
+                      : streamedSnapshot;
+                }
+                const cleaned = cleanTranscript(finalText);
 
                 const isReal = cleaned.length >= MIN_REAL_TRANSCRIPT_CHARS;
                 if (!isReal) {
@@ -713,6 +919,7 @@ export function useAgentSession(): UseAgentSessionResult {
                     );
                   }
                   if (phaseRef.current === 'syncing') setPhase('listening');
+                  setTranscriptTail('');
                   pushTaskToast({
                     id: `flash:${Date.now()}`,
                     kind: 'question',
@@ -730,16 +937,22 @@ export function useAgentSession(): UseAgentSessionResult {
                   void startStreamIteration();
                   return;
                 }
-                // Real utterance — ship it.
+                // Real utterance — hand the finalized transcript to the model
+                // seam. With no model wired up this just console.logs it; a
+                // registered handler (the future Qwen) receives it here. No
+                // backend round-trip, so the mic stays hot (back to 'listening')
+                // instead of entering 'thinking'.
                 emptyTranscriptStreakRef.current = 0;
                 mutationsThisSegmentRef.current = 0;
-                setPhase('thinking');
                 setTranscript(cleaned);
-                ws.send({
-                  type: 'utterance_text',
-                  client_seg_id: uuidv4(),
-                  text: cleaned,
-                });
+                setTranscriptTail('');
+                if (REASONING_BACKEND === 'apple') {
+                  // On-device Apple FM: extract event → log → create task.
+                  void runAppleSegment(cleaned);
+                } else {
+                  emitTranscript(cleaned, uuidv4());
+                  if (phaseRef.current === 'syncing') setPhase('listening');
+                }
                 void startStreamIteration();
               })();
             }
@@ -753,6 +966,14 @@ export function useAgentSession(): UseAgentSessionResult {
 
       try {
         await pcm.start();
+        // No backend handshake anymore — the WS used to flip us to 'listening'
+        // on its session_ready event. Go straight to listening once the mic is
+        // live (mirrors the on-device pipeline; the old connecting→session_ready
+        // dance is gone).
+        if (phaseRef.current !== 'idle' && phaseRef.current !== 'loading') {
+          setPhase('listening');
+          resetIdleWatchdog();
+        }
       } catch (e: any) {
         if (__DEV__) console.warn('[agent] pcm failed to start:', e?.message);
         await stop(`pcm_start_failed:${e?.message}`);
@@ -764,6 +985,7 @@ export function useAgentSession(): UseAgentSessionResult {
       handleEvent,
       pushTaskToast,
       resetIdleWatchdog,
+      runAppleSegment,
       startStreamIteration,
       stop,
     ],
@@ -773,6 +995,11 @@ export function useAgentSession(): UseAgentSessionResult {
     const ws = wsRef.current;
     if (!ws) return;
     ws.send({ type: 'client_undo', n, client_op_id: uuidv4() });
+  }, []);
+
+  // The todo screen calls this when the viewed day changes; start() reads it.
+  const setViewedDate = useCallback((date: string) => {
+    if (date) viewedDateRef.current = date;
   }, []);
 
   useEffect(() => {
@@ -830,15 +1057,17 @@ export function useAgentSession(): UseAgentSessionResult {
     phase,
     errorMessage,
     transcript,
+    transcriptTail,
     amplitude,
     lastUndoChip,
     idlePromptVisible,
     taskToasts,
     actionsCompleted,
-    downloadProgress: whisper.downloadProgress,
-    asrReady: whisper.isReady,
+    downloadProgress: asr.downloadProgress,
+    asrReady: asr.isReady,
     start,
     stop,
     clientUndo,
+    setViewedDate,
   };
 }

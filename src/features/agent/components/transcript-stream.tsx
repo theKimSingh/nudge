@@ -1,129 +1,136 @@
 import { useEffect, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
-import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
+import Animated, { FadeIn } from 'react-native-reanimated';
 
 import { Fonts } from '@/src/constants/theme';
 import { useColorScheme } from '@/src/hooks/use-color-scheme';
 
 type Props = {
   text: string;
-  tokenLifetimeMs?: number;
+  /** Unconfirmed trailing words. Rendered faint after `text`, re-rendered fresh
+   *  each update (not accumulated) so corrections replace cleanly. */
+  tail?: string;
 };
 
 type Token = {
   id: string;
   word: string;
-  bornAt: number;
 };
 
-// Cap the live transcript at ~2-3 wrapped lines so a long dictation
-// ("So today I want to do X, Y, then Z, and …") doesn't push the
-// feedback-band off the top of the screen. Older words still self-trim
-// via the lifetime expiry, but this is the hard upper bound.
-const MAX_TOKENS = 14;
-const DEFAULT_LIFETIME_MS = 4500;
+// Cap retained words to ~4 wrapped lines (≈ TOKENS_PER_LINE × 4). A longer
+// dictation keeps the most recent ~4 lines; older words trim off the top. The
+// transcript does NOT fade out over time — once the user stops it HANGS until
+// `text` is reset (e.g. cleared when the success chips replace it).
+const MAX_TOKENS = 20;
 
-export function TranscriptStream({ text, tokenLifetimeMs = DEFAULT_LIFETIME_MS }: Props) {
+// Position-based fade. `rank` counts back from the newest token (0 = newest).
+// The newest FULL_RECENT_TOKENS words (~2 lines) stay at FULL_ALPHA; every older
+// line drops PER_LINE_FADE, floored at FAINT_FLOOR so it remains readable.
+const FULL_ALPHA = 0.95;
+const FAINT_FLOOR = 0.28;
+const FULL_RECENT_TOKENS = 9; // ≈ 2 wrapped lines
+const TOKENS_PER_LINE = 5;
+const PER_LINE_FADE = 0.22;
+// Opacity for the unconfirmed tail — clearly tentative but readable.
+const TAIL_ALPHA = 0.4;
+
+// Split a transcript into display words, preserving punctuation so the rendered
+// transcript matches what ASR actually produced ("early." stays "early.",
+// "2:30" stays "2:30"). Punctuation rides on the trailing token of each word.
+function toWords(s: string): string[] {
+  return s.split(/\s+/).filter(Boolean);
+}
+
+export function TranscriptStream({ text, tail = '' }: Props) {
   const scheme = useColorScheme() ?? 'light';
   const [tokens, setTokens] = useState<Token[]>([]);
-  const [, setNow] = useState(0);
   const prevTextRef = useRef('');
   const seqRef = useRef(0);
 
   useEffect(() => {
     const prev = prevTextRef.current;
-    let added: string[];
-    if (text.startsWith(prev)) {
-      const tail = text.slice(prev.length);
-      added = tail.split(/\s+/).filter(Boolean);
-    } else {
-      const prevWords = prev.split(/\s+/).filter(Boolean);
-      const currWords = text.split(/\s+/).filter(Boolean);
-      added = currWords.slice(prevWords.length);
-      if (added.length === 0 && currWords.length > prevWords.length) {
-        added = currWords.slice(-1);
-      }
-    }
     prevTextRef.current = text;
-    if (added.length === 0) return;
 
-    const now = Date.now();
-    setTokens((curr) => {
-      const next = [
-        ...curr,
-        ...added.map((word) => ({
-          id: `${now}-${seqRef.current++}`,
-          word,
-          bornAt: now,
-        })),
-      ];
-      if (next.length > MAX_TOKENS) {
-        return next.slice(next.length - MAX_TOKENS);
-      }
-      return next;
-    });
-  }, [text]);
+    // Reset (cleared when the action lands / success chip replaces it) → drop
+    // the tokens. This is the ONLY way the transcript clears now; it no longer
+    // fades out on its own after the user stops talking.
+    if (!text.trim()) {
+      setTokens((curr) => (curr.length ? [] : curr));
+      return;
+    }
 
-  useEffect(() => {
-    const interval = setInterval(() => {
+    // Append-only when the new text extends the old. Case-insensitive so
+    // capitalization drift between decodes doesn't force a full rebuild/flash.
+    if (prev && text.toLowerCase().startsWith(prev.toLowerCase())) {
+      const added = toWords(text.slice(prev.length));
+      if (!added.length) return;
       const now = Date.now();
       setTokens((curr) => {
-        const filtered = curr.filter((t) => now - t.bornAt < tokenLifetimeMs);
-        if (filtered.length === curr.length) {
-          setNow(now);
-          return curr;
-        }
-        return filtered;
+        const next = [
+          ...curr,
+          ...added.map((word) => ({ id: `${now}-${seqRef.current++}`, word })),
+        ];
+        return next.length > MAX_TOKENS ? next.slice(next.length - MAX_TOKENS) : next;
       });
-    }, 500);
-    return () => clearInterval(interval);
-  }, [tokenLifetimeMs]);
+      return;
+    }
 
-  const now = Date.now();
+    // Otherwise it's a fresh utterance / divergent re-decode — rebuild from the
+    // current text.
+    const now = Date.now();
+    let next = toWords(text).map((word) => ({
+      id: `${now}-${seqRef.current++}`,
+      word,
+    }));
+    if (next.length > MAX_TOKENS) next = next.slice(next.length - MAX_TOKENS);
+    setTokens(next);
+  }, [text]);
+
   const dark = scheme === 'dark';
-  // Tokens ramp from 0.95 → 0 over their lifetime instead of relying on a
-  // Reanimated `exiting` animation. `exiting` orphan-renders the token at
-  // its absolute screen position when removed, which crashes into wherever
-  // the hint snapped after the parent transcriptSlot collapsed. Doing the
-  // fade as an in-place opacity ramp means the token is already invisible
-  // by the time it unmounts — no orphan animation possible.
   const baseRGB = dark ? '255,255,255' : '10,10,10';
-  const fadeOutWindowMs = 600;
+  const haloColor = dark ? 'rgba(0,0,0,0.55)' : 'rgba(255,255,255,0.85)';
 
   return (
     <View style={styles.container} pointerEvents="none">
-      {tokens.map((token) => {
-        const ageMs = now - token.bornAt;
-        const remaining = tokenLifetimeMs - ageMs;
-        const lifeAlpha = Math.max(
-          0.55,
-          Math.min(0.95, 1 - ageMs / tokenLifetimeMs),
-        );
-        const exitAlpha =
-          remaining < fadeOutWindowMs
-            ? Math.max(0, remaining / fadeOutWindowMs)
-            : 1;
-        const alpha = lifeAlpha * exitAlpha;
+      {tokens.map((token, i) => {
+        // Position fade only: older lines sit fainter, newest ~2 lines full.
+        // No time-based fade — the transcript stays put until it's cleared.
+        const rank = tokens.length - 1 - i; // 0 = newest
+        const linesAbove =
+          rank < FULL_RECENT_TOKENS
+            ? 0
+            : Math.floor((rank - FULL_RECENT_TOKENS) / TOKENS_PER_LINE) + 1;
+        const alpha = Math.max(FAINT_FLOOR, FULL_ALPHA - linesAbove * PER_LINE_FADE);
         return (
           <Animated.Text
             key={token.id}
             entering={FadeIn.duration(150)}
             style={[
               styles.token,
-              {
-                color: `rgba(${baseRGB},${alpha})`,
-                // Opposite-color halo so the word floats off whatever the blur
-                // is showing through right now.
-                textShadowColor: dark
-                  ? 'rgba(0,0,0,0.55)'
-                  : 'rgba(255,255,255,0.85)',
-              },
+              { color: `rgba(${baseRGB},${alpha})`, textShadowColor: haloColor },
             ]}
           >
             {token.word}
           </Animated.Text>
         );
       })}
+      {/* Unconfirmed tail — rendered straight from the prop (not accumulated),
+          so a correction just replaces these words instead of leaving stale
+          tokens behind. Faint to signal "still being decoded". */}
+      {tail
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((word, i) => (
+          <Animated.Text
+            key={`tail-${i}`}
+            style={[
+              styles.token,
+              { color: `rgba(${baseRGB},${TAIL_ALPHA})`, textShadowColor: haloColor },
+            ]}
+          >
+            {word}
+          </Animated.Text>
+        ))}
     </View>
   );
 }

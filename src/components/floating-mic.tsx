@@ -108,9 +108,6 @@ export function FloatingMic() {
   const idleTint = isDark ? 'rgba(28,28,30,0.55)' : 'rgba(255,255,255,0.5)';
   const activeTint = isDark ? 'rgba(14,14,16,0.35)' : 'rgba(255,255,255,0.25)';
 
-  const todayDate = new Date();
-  const dateKey = `${todayDate.getFullYear()}-${String(todayDate.getMonth() + 1).padStart(2, '0')}-${String(todayDate.getDate()).padStart(2, '0')}`;
-
   const onMicPress = () => {
     if (modelLoading) return; // model not ready yet; tap is a no-op
     if (__DEV__) {
@@ -121,7 +118,9 @@ export function FloatingMic() {
     if (agentActive) {
       void agent.stop('mic_button_tap');
     } else {
-      void agent.start(dateKey);
+      // No date arg — the session uses the todo tab's viewed day (set via
+      // setViewedDate), falling back to today.
+      void agent.start();
     }
   };
 

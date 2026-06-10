@@ -10,19 +10,27 @@ export type VadConfig = {
 
 type State = 'silent' | 'candidate_speech' | 'speaking' | 'candidate_silent';
 
-const INITIAL_FLOOR_DB = -55;
+const INITIAL_FLOOR_DB = -60;
 
 export function createVad(cfg?: VadConfig) {
-  // Tuned against real-device + Whisper streaming. Whisper Tiny needs ~2s of
-  // audio context to produce a stable transcript; cutting it off after only
-  // 400ms of silence handed it sub-1s clips that came back empty. 900ms
-  // silence + 400ms minSpeech rides out natural breath/word pauses without
-  // letting the user feel laggy. Hysteresis widened to 10dB to suppress the
-  // ambient blips that previously oscillated speech_start.
-  const silenceMs = cfg?.silenceMs ?? 1200;
+  // Device-independent voice gating. We never use an absolute dB threshold —
+  // mic sensitivity + OS AGC make the same sound read differently on every
+  // phone. Instead we track the room's noise floor live (per device, per
+  // environment) and require speech to clear it by `hysteresisDb`.
+  //
+  // The margin works because the user speaks INTO the phone (near-field), so
+  // their voice lands ~20-35 dB above ambient, while background noise sits near
+  // the floor. A 16 dB margin drops the trigger into that gap: above typical
+  // background, below near-field speech — and since it's relative to the
+  // measured floor, it self-calibrates on any device/room. (The old 10 dB was
+  // too low, so a TV / nearby talker cleared it and registered as speech.)
+  //
+  // silenceMs 1800: wait out natural mid-plan pauses/stutters instead of
+  // shipping a fragment. minSpeechMs 400: reject transient clicks/taps.
+  const silenceMs = cfg?.silenceMs ?? 1800;
   const minSpeechMs = cfg?.minSpeechMs ?? 400;
   const floorRise = cfg?.noiseFloorRise ?? 0.05;
-  const hysteresisDb = cfg?.hysteresisDb ?? 10;
+  const hysteresisDb = cfg?.hysteresisDb ?? 16;
 
   let noiseFloor = INITIAL_FLOOR_DB;
   let state: State = 'silent';
@@ -32,6 +40,20 @@ export function createVad(cfg?: VadConfig) {
     noiseFloor = INITIAL_FLOOR_DB;
     state = 'silent';
     candidateStartTs = 0;
+  }
+
+  // Asymmetric noise-floor tracking. Adapt FAST downward (a quieter frame is
+  // genuine ambient — chase it so the floor settles to the real room level
+  // within a few frames instead of lingering near INITIAL_FLOOR_DB) and SLOW
+  // upward (a louder frame is probably speech onset, not a rising room — let it
+  // nudge the floor only slightly so speech can't ratchet the threshold up out
+  // from under itself). The old symmetric 0.05 rate left the floor ~4 dB high
+  // when the user spoke right after tapping the mic, squeezing the margin so
+  // their speech straddled the threshold and never latched.
+  const FLOOR_RISE_FAST = 0.3;
+  function adaptFloor(meteringDb: number) {
+    const rate = meteringDb < noiseFloor ? FLOOR_RISE_FAST : floorRise;
+    noiseFloor = noiseFloor + rate * (meteringDb - noiseFloor);
   }
 
   function push(meteringDb: number, ts: number): VadEvent | null {
@@ -50,20 +72,26 @@ export function createVad(cfg?: VadConfig) {
           state = 'candidate_speech';
           candidateStartTs = ts;
         } else {
-          noiseFloor = noiseFloor + floorRise * (meteringDb - noiseFloor);
+          adaptFloor(meteringDb);
         }
         break;
       }
       case 'candidate_speech': {
-        if (above) {
-          if (ts - candidateStartTs >= minSpeechMs) {
-            state = 'speaking';
-            event = { type: 'speech_start', ts: candidateStartTs };
-          }
-        } else {
+        // Hysteresis on the START, mirroring the end: a confirmed candidate is
+        // only cancelled when the level drops all the way back to the (lower)
+        // silenceThreshold — NOT on the first frame that merely dips below the
+        // high speakThreshold. Speech dips between syllables; without this, a
+        // single inter-syllable dip reset the candidate every time and the
+        // minSpeechMs latch never completed (no speech_start was ever emitted).
+        if (below) {
           state = 'silent';
           candidateStartTs = 0;
-          noiseFloor = noiseFloor + floorRise * (meteringDb - noiseFloor);
+          adaptFloor(meteringDb);
+        } else if (ts - candidateStartTs >= minSpeechMs) {
+          // Sustained above the floor (not necessarily above speakThreshold
+          // every frame) for long enough — this is real speech.
+          state = 'speaking';
+          event = { type: 'speech_start', ts: candidateStartTs };
         }
         break;
       }
@@ -83,7 +111,7 @@ export function createVad(cfg?: VadConfig) {
             state = 'silent';
             event = { type: 'speech_end', ts };
             candidateStartTs = 0;
-            noiseFloor = noiseFloor + floorRise * (meteringDb - noiseFloor);
+            adaptFloor(meteringDb);
           }
         }
         break;

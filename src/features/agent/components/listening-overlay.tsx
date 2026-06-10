@@ -13,8 +13,15 @@ import { FeedbackBand } from './feedback-band';
 const EXIT_HOLD_MS = 650;
 
 export function ListeningOverlay() {
-  const { phase, transcript, amplitude, taskToasts, actionsCompleted, downloadProgress } =
-    useAgentSessionCtx();
+  const {
+    phase,
+    transcript,
+    transcriptTail,
+    amplitude,
+    taskToasts,
+    actionsCompleted,
+    downloadProgress,
+  } = useAgentSessionCtx();
 
   // Initial moment uses the longer phrasing; subsequent listens drop the
   // "I'm" prefix so the follow-up reads as a quick confirmation that the
@@ -83,6 +90,7 @@ export function ListeningOverlay() {
         <FeedbackBand
           toasts={taskToasts}
           transcript={transcript}
+          transcriptTail={transcriptTail}
           hint={hint}
         />
       ) : null}
