@@ -12,7 +12,8 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.cse481.nudge",
       "infoPlist": {
-        "NSMicrophoneUsageDescription": "Nudge transcribes your voice on-device to plan tasks."
+        "NSMicrophoneUsageDescription": "Nudge transcribes your voice on-device to plan tasks.",
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
@@ -25,7 +26,9 @@
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
-      "permissions": ["android.permission.RECORD_AUDIO"]
+      "permissions": [
+        "android.permission.RECORD_AUDIO"
+      ]
     },
     "web": {
       "output": "static",
@@ -50,14 +53,24 @@
       [
         "expo-build-properties",
         {
-          "ios": { "deploymentTarget": "17.0" },
-          "android": { "minSdkVersion": 33 }
+          "ios": {
+            "deploymentTarget": "17.0"
+          },
+          "android": {
+            "minSdkVersion": 33
+          }
         }
       ]
     ],
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "ef2bb669-9fdc-40cb-8e4d-0ab7b5d0bb1b"
+      }
     }
   }
 }
